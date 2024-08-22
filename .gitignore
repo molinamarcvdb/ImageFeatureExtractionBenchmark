@@ -5,3 +5,4 @@ data/synthetic/diffusion/*
 data/synthetic/gan/*
 data/turing_tests/*
 __pycache__
+foo.py

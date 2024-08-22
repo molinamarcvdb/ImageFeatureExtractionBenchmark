@@ -1,5 +1,5 @@
 
-# README for `main.py`
+# Image Feature Extraction
 
 ## Overview
 
