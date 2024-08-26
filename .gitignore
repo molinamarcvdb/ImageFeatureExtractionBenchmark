@@ -5,4 +5,6 @@ data/synthetic/diffusion/*
 data/synthetic/gan/*
 data/turing_tests/*
 __pycache__
-foo.py
+foo.pypretrained/MUSIQ/musiq_spaq_ckpt.npz
+pretrained/MUSIQ/archive.tar
+pretrained/MUSIQ/saved_model.pb
