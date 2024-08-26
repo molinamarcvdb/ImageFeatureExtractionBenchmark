@@ -46,9 +46,9 @@ def preprocess_images(images, processor, target_size=None, preprocess_fn=None):
 def extract_features(network_name, model, images, processor=None, target_size=None, preprocess_fn=None):
     inputs = preprocess_images(images, processor, target_size, preprocess_fn)
     with torch.no_grad():
-        if network_name.lower() in ["clip", "rad_clip"]:
+        if network_name.lower() in ["clip", "med_clip"]:
             features = model.get_image_features(inputs).cpu().numpy()
-        elif network_name.lower() in ["rad_dino", 'dino']:
+        elif network_name.lower() in ["rad-dino", 'dinov2']:
             outputs = model(inputs)
             features = outputs.pooler_output.cpu().numpy()
         else:
