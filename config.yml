@@ -1,6 +1,9 @@
 # Configuration file for feature extraction and metric computation
 feature_extraction: false
-realism_correlation: true
+eval_only: false
+sing_image_eval: true
+realism_correlation: false
+
 
 # Paths to the real and synthetic datasets
 real_dataset_path: './data/real'
@@ -27,6 +30,9 @@ metrics:
   - recall
   - density
   - coverage
+  - kid
+  - is
+  - mmd
 
 # Batch size for feature extraction
 batch_size: 64
@@ -42,4 +48,4 @@ features_output_dir: 'data/features'
 
 # Path to jsonl where turign test responses are contained
 jsonl_path: '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/data/turing_tests/evaluations_4e26daae-530d-430b-81be-107704de6a9e_MARC_M.jsonl'
-timestamp: '20240821_151647' # for specific features previously computed, use with feature_extraction=false
+timestamp: '20240822_155631' #'20240821_151647' # for specific features previously computed, use with feature_extraction=false

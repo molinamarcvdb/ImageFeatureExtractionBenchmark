@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
+from transformers import AutoModel
 
 # Link azure to local path and group answers
 def link_azure_local(jsonl_path):
@@ -158,8 +159,15 @@ def realism_corr_net(dict_sets_realism, metrics, timestamp):
     
     for network in networks:
         # Load the CSV file into a DataFrame
-        df = pd.read_csv(os.path.join(timestamp_dir, network, f'metrics/{network}_metrics.csv'))
-        df.drop(columns=['set_name'], inplace=True)
+        df = pd.read_csv(os.path.join(timestamp_dir, network, f'metrics/{network}_aggregated_metrics.csv'))
+        
+        # Filter for only the mean columns
+        mean_cols = [col for col in df.columns if col.endswith('_mean')]
+        df = df[mean_cols]
+        
+        # Rename columns to remove '_mean' suffix
+        df.columns = [col.replace('_mean', '') for col in df.columns]
+        
         # Prefix the columns with the network name
         df.columns = [f'{network}_{col}' for col in df.columns]
         
@@ -250,6 +258,93 @@ def realism_corr_net(dict_sets_realism, metrics, timestamp):
     axs[1, 1].set_yticklabels(axs[1, 1].get_yticklabels(), rotation=0)
 
     plt.tight_layout()
-    plt.show()
+    plt.savefig(os.path.join(timestamp_dir, 'corr_turing_quant.png'))
+    correlation_results.to_csv(os.path.join(timestamp_dir, 'corr_turing_quant.csv'))
 
     return correlation_results
+
+
+
+import os
+import pickle
+import torch
+import tensorflow as tf
+import tensorflow_hub as hub
+from huggingface_hub import hf_hub_download
+
+def load_model_from_hub(model_repo_id, file_name):
+    # Define the mapping of file extensions to loading functions
+    def load_pytorch_model(file_path):
+        print(f"Loading PyTorch model from {file_path}...")
+        return torch.load(file_path, map_location='cpu')
+
+    def load_tensorflow_model(file_path):
+        print(f"Loading TensorFlow model from {file_path}...")
+        return tf.keras.models.load_model(file_path)
+
+    def load_graph_def(file_path):
+        print(f"Loading TensorFlow GraphDef from {file_path}...")
+        with open(file_path, 'rb') as f:
+            graph_def = tf.compat.v1.GraphDef()
+            graph_def.ParseFromString(f.read())
+            return graph_def
+
+    def load_pickled_model(file_path):
+        print(f"Loading Pickle model from {file_path}...")
+        with open(file_path, 'rb') as f:
+            return pickle.load(f)
+
+    def load_musiq_model():
+        print(f"Loading MUSIQ model './pretrained/MUSIQ/'...")
+        
+        return hub.KerasLayer('./pretrained/MUSIQ/', signature="serving_default", output_key="output_0")
+
+    file_ext = os.path.splitext(file_name)[1]
+
+    # Download the file from the Hugging Face Hub
+    if not file_name.endswith('MUSIQ'):
+        model_path = hf_hub_download(repo_id=model_repo_id, filename=file_name)
+    else:
+
+        save_dir = './pretrained/'
+        os.makedirs(save_dir, exist_ok=True)
+
+        hf_hub_download(repo_id=model_repo_id, filename='MUSIQ/musiq_spaq_ckpt.npz', local_dir=save_dir)
+        hf_hub_download(repo_id=model_repo_id, filename='MUSIQ/saved_model.pb', local_dir=save_dir)
+        hf_hub_download(repo_id=model_repo_id, filename='MUSIQ/archive.tar', local_dir=save_dir)
+        hf_hub_download(repo_id=model_repo_id, filename='MUSIQ/variables/variables.data-00000-of-00001', local_dir=save_dir)
+        hf_hub_download(repo_id=model_repo_id, filename='MUSIQ/variables/variables.index', local_dir=save_dir)
+        
+
+    if file_ext in ['.pth', '.pt']:
+        # Load PyTorch model
+        return load_pytorch_model(model_path)
+
+    elif file_ext in ['.bin', '.pt']:
+        # Load Hugging Face PyTorch model
+        print(f"Loading Hugging Face PyTorch model from {model_path}...")
+        return AutoModel.from_pretrained(model_repo_id)
+
+    elif file_ext in ['.h5', '.pb']:
+        # Load TensorFlow/Keras model or GraphDef
+        if file_ext == '.pb':
+            # Load TensorFlow GraphDef
+            return load_graph_def(model_path)
+        else:
+            # Load TensorFlow/Keras model
+            return load_tensorflow_model(model_path)
+
+    elif file_ext == '.ckpt':
+        # Load PyTorch checkpoint
+        return load_pytorch_model(model_path)
+
+    elif file_ext == '.pkl':
+        # Load Pickle model
+        return load_pickled_model(model_path)
+
+    elif file_name.endswith('MUSIQ'):
+        # Load MUSIQ model
+        return load_musiq_model()
+
+    else:
+        raise ValueError(f"Unsupported file extension: {file_ext}")
