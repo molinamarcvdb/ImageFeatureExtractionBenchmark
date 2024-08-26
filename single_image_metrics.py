@@ -14,7 +14,6 @@ from transformers import AutoModelForCausalLM
 import pyiqa
 from tqdm import tqdm
 from typing import Callable, Dict, List
-from paq2piq.paq2piq.inference_model import *
 import tensorflow as tf
 import tensorflow_hub as hub
 import io
