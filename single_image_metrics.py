@@ -382,11 +382,10 @@ def compute_ground_truth_correlations(output_dir: str, mean_realism_z_scored: pd
     # Load the metric evaluation results
     single_metric_df = pd.read_csv(single_metric_eval_path, index_col='Image')
     single_metric_baseline_df = pd.read_csv(single_metric_eval_baseline_path, index_col='Image')
-    print(single_metric_df)
+
     # Combine the metric evaluation results with the ground truth (realism scores)
     combined_df = single_metric_df.merge(mean_realism_z_scored, left_index=True, right_index=True, how='inner')
-    print(combined_df)
-    print(mean_realism_z_scored)
+
     # Initialize a list to store the correlation results
     correlation_results = []
     
@@ -413,7 +412,11 @@ def compute_ground_truth_correlations(output_dir: str, mean_realism_z_scored: pd
     correlation_csv_path = os.path.join(output_dir, "ground_truth_correlations.csv")
     correlation_df.to_csv(correlation_csv_path, index=False)
     
+    plot_metric_comparison(single_metric_df, single_metric_baseline_df, output_dir)
+
     print(f"Correlation results saved to {correlation_csv_path}")
+
+
 
 def plot_metric_comparison(single_metric_df: pd.DataFrame, single_metric_baseline_df: pd.DataFrame, output_dir: str) -> None:
     # Ensure that the dataframes have the same metrics
