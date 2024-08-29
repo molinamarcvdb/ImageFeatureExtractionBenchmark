@@ -1,100 +1,69 @@
-import os
-import numpy as np
-# Link azure to local path and group answers
-def link_azure_local(jsonl_path):
-    import json
-    import os
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense
+import torch
+from tensorflow.keras.applications import InceptionV3, ResNet50, InceptionResNetV2, DenseNet121
+# Assuming 'model' is your pre-trained Keras model
+n_features = 128    
+model =  ResNet50(weights='imagenet', include_top=False, pooling='avg')
+backbone_type = 'keras'
+ # Print the output shape of the last layer before the dense laye
 
-    # Function to read JSONL file
-    def load_jsonl(file_path):
-        with open(file_path, 'r') as file:
-            for line in file:
-                yield json.loads(line)
+# Remove the top layer
+base_model = Model(inputs=model.input, outputs=model.layers[-2].output)
 
-    # Load JSONL data
-    data = list(load_jsonl(jsonl_path))
+# Get the number of features from the last layer
+in_features = base_model.output.shape[-1]
 
-    # Define path mappings
-    dict_map = {
-        'synth_diff_calc':'./data/synthetic/diffusion',
-        'synth_diff_normal':'./data/synthetic/diffusion',
-        'synth_gan_calc':'./data/synthetic/gan',
-        'synth_gan_normal':'./data/synthetic/gan',
-        'real_normal':'./data/real',
-        'real_calc':'./data/real'
-    }
+# Add a new Dense layer with n_features outputs
+new_output = Dense(n_features, name='new_fc')(base_model.output)
 
-    # Group assessments by filename
-    grouped_data = {}
+# Create a new model
+backbone = Model(inputs=base_model.input, outputs=new_output)
 
-    for i, record in enumerate(data):
-        azure_path = record['image_path']
-        category = record['category']
+x = torch.randn(1, 224, 224, 3)  # Example input, adjust according to your needs
+output = model.predict(x)
+print(output.shape)
+import torch
+from torch import nn
+from transformers import AutoModel
 
-        # Extract filename from the Azure path
-        filename = azure_path.split('/')[6].split('?')[0]
+# Set the device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Generate the local file path based on the category
-        if category in dict_map:
-            local_path = None
-            if category == 'synth_gan_calc':
-                local_path = os.path.join(dict_map[category], os.path.splitext(filename)[0]+'_calc.jpeg')
-            elif category == 'synth_diff_calc':
-                local_path = os.path.join(dict_map[category], os.path.splitext(filename)[0]+'_calc.png')
-            elif category == 'synth_gan_normal':
-                local_path = os.path.join(dict_map[category], os.path.splitext(filename)[0]+'_normal.jpeg')
-            elif category == 'synth_diff_normal':
-                local_path = os.path.join(dict_map[category], os.path.splitext(filename)[0]+'_normal.png')
-            else:
-                local_path = os.path.join(dict_map[category], filename)
+# Load the pre-trained model
+backbone = AutoModel.from_pretrained("facebook/dinov2-base", output_hidden_states=True).to(device)
 
-            if local_path:
-                # Check if the local file exists
-                if os.path.exists(local_path):
-                    record['local_path'] = local_path
-                    grouped_data[i] = record
-                else: print(local_path)
-    return grouped_data
+# Get the number of features in the last layer
+in_features = backbone.config.hidden_size
 
-def get_sets_content():
-    case_dir = os.path.join('./data/features', timestamp)
+# Define the number of output features you want
+n_features = 1000  # Change this to your desired number of features
 
-    net_sets_dict = {}
-    #Itreate over networks
-    for network in os.listdir(case_dir):
-        # Iterate over sets
-        for i, file in enumerate([file for file in os.listdir(os.path.join(case_dir, network, 'synthetic')) if file.endswith('filenames.npy')]):
-            actual_set = i+1
-            list_files_set = np.load(os.path.join(case_dir, network, 'synthetic', file))
-            net_sets_dict[actual_set] = list(list_files_set)
-        break
-    
-    return net_sets_dict
+# Create a new linear layer
+new_head = nn.Linear(in_features, n_features).to(device)
 
+# Replace the classifier
+# Note: DINOv2 doesn't have a classifier by default, so we're adding one
+backbone.classifier = new_head
 
-def get_realism_set_dict(grouped_data, net_sets_dict):
+# If you want to freeze the backbone and only train the new head
+for param in backbone.parameters():
+    param.requires_grad = False
+for param in backbone.classifier.parameters():
+    param.requires_grad = True
 
-    dict_sets_realism = {i+1: [] for i in range(len(net_sets_dict.keys()))}
+# Example forward pass
+def forward(x):
+    outputs = backbone(x)
+    # Use the last hidden state
+    last_hidden_state = outputs.last_hidden_state
+    # Global average pooling
+    pooled_output = torch.mean(last_hidden_state, dim=1)
+    # Pass through the new classifier
+    logits = backbone.classifier(pooled_output)
+    return logits
 
-    for i in grouped_data:
-        local_path = grouped_data[i]['local_path']
-        for j in net_sets_dict:
-            if local_path in net_sets_dict[j]:
-                dict_sets_realism[j].append(grouped_data[i]['realism_score'])
-                break
-    return dict_sets_realism
-
-jsonl_path = '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/data/turing_tests/evaluations_4e26daae-530d-430b-81be-107704de6a9e_MARC_M.jsonl'
-project_dir = '/home/ksamamov/GitLab/Notebooks/feat_ext_bench'
-timestamp = '20240821_123534'
-
-# Azure to local image path linking
-grouped_data = link_azure_local(jsonl_path)
-
-# Record of each image linking it with the local_path
-# All images sets should contain the same images only iterating for first network
-net_sets_dict = get_sets_content()
-
-# Get realism dictioanry as qualitative metric in dict format
-dict_sets_realism = get_realism_set_dict(grouped_data, net_sets_dict)
-print(dict_sets_realism)
+# Example usage
+input_tensor = torch.randn(1, 3, 224, 224).to(device)  # Adjust input size as needed
+output = forward(input_tensor)
+print(output.shape)  # Should print torch.Size([1, n_features])

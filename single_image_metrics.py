@@ -19,8 +19,6 @@ import tensorflow_hub as hub
 import io
 from piq import information_weighted_ssim, fsim, srsim, gmsd, multi_scale_gmsd, vsi, dss, haarpsi, mdsi
 from utils import load_model_from_hub
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 # Metric functions
 def compute_ms_ssim(ref_img: np.ndarray, deg_img: np.ndarray) -> float:
@@ -237,7 +235,7 @@ def process_images(synthetic_dir: str, real_dir: str, metric_func: Callable, met
                 break
             # Aggregate the metric values (e.g., mean)
             aggregated_metric_value = np.mean(metric_list)
-            metric_values[os.path.basename(synthetic_file)] = aggregated_metric_value
+            metric_values[synthetic_file] = aggregated_metric_value
 
     return metric_values
 
@@ -260,7 +258,7 @@ def compute_non_ref_metrics(synthetic_dir: str, pyiqa_metrics: List[str]) -> Dic
                 
                 # Compute the metric
                 output = metric_model(synthetic_img)
-                metric_results.append({"Image": os.path.basename(synthetic_file), metric_name: output.item()})
+                metric_results.append({"image": synthetic_file, "score": output.item()})
         
         # Store the results for this metric
         all_non_ref_metrics[metric_name] = metric_results
@@ -297,29 +295,6 @@ def main_single_metric_eval(synthetic_images_dir: str, real_images_dir: str, out
 
     # Reference-based metrics
     metrics = {
-            "MS-SSIM": compute_ms_ssim,
-            "PSNR": compute_psnr,
-            "SSIM": compute_ssim,
-            "VIF": compute_vif,
-            "DISTS": lambda ref, deg: compute_dists(dists_network, ref, deg),
-            "LPIPS": lambda ref, deg: compute_lpips(lpips_network, ref, deg),
-            "HaarPSI": compute_haarpsi,
-            "HaarPSI_PIQ": compute_piq_haarpsi,
-            "IW-SSIM": compute_information_weighted_ssim,
-            "FSIM": compute_fsim,
-            "SR-SIM": compute_srsim,
-            "GMSD": compute_gmsd,
-            "MS-GMSD": compute_multi_scale_gmsd,
-            "VSI": compute_vsi,
-            "DSS": compute_dss,
-            "MDSI": compute_mdsi,
-            "TOPIQ_FR": lambda ref, deg: compute_topiq_fr(ref, deg),
-            "AHIQ": lambda ref, deg: compute_ahiq(ref, deg),
-            "PIEAPP": lambda ref, deg: compute_pieapp(ref, deg),
-            "WADIQAM_FR": lambda ref, deg: compute_wadiqam(ref, deg),
-            "CW-SSIM": lambda ref, deg: compute_cw_ssim(ref, deg),
-            "NLPD": lambda ref, deg: compute_nlpd(ref, deg),
-            "MAD": lambda ref, deg: compute_mad(ref, deg),
     }
 
     # Non-reference metrics
@@ -329,12 +304,11 @@ def main_single_metric_eval(synthetic_images_dir: str, real_images_dir: str, out
         'musiq-paq2piq', 'musiq-ava', 'maniqa', 'maniqa-kadid', 'maniqa-pipal',
         'clipiqa', 'clipiqa+', 'clipiqa+_vitL14_512', 'clipiqa+_rn50_512', 
         'topiq_nr', 'topiq_nr-flive', 'topiq_nr-spaq', 'liqe', 'liqe_mix', 'niqe'
-    ] 
+    ]
 
     # Initialize an empty list to store each metric's results
     all_metrics = []
-    all_metrics_baseline = []
-    
+
     # Process metrics that require both reference and synthetic images
     for metric_name, metric_func in metrics.items():
         metric_values = process_images(synthetic_images_dir, real_images_dir, metric_func, metric_name)
@@ -346,110 +320,18 @@ def main_single_metric_eval(synthetic_images_dir: str, real_images_dir: str, out
 
     # Process non-reference metrics one by one
     non_ref_results = compute_non_ref_metrics(synthetic_images_dir, pyiqa_metrics)
-    non_ref_results_baseline = compute_non_ref_metrics(real_images_dir, pyiqa_metrics)
-
-    # Convert non-reference metrics results to DataFrame format and append to the list
-        
-    for metric_name, metric_data in non_ref_results.items(): # Prepare DataFrame from the metric data 
-        metric_df = pd.DataFrame.from_records(metric_data).set_index('Image')
-        all_metrics.append(metric_df)
     
-    for metric_name, metric_data in non_ref_results_baseline.items(): # Prepare DataFrame from the metric data 
-        
-        metric_df = pd.DataFrame.from_records(metric_data).set_index('Image')
-        all_metrics_baseline.append(metric_df)
+    # Convert non-reference metrics results to DataFrame format and append to the list
+    for metric_name, metric_data in non_ref_results.items():
+        # Prepare DataFrame from the metric data
+        metric_df = pd.DataFrame.from_records(metric_data).set_index('image')
+        all_metrics.append(metric_df)
 
     # Concatenate all metrics DataFrames into a single DataFrame
     result_df = pd.concat(all_metrics, axis=1)
-           
-    result_baseline_df = pd.concat(all_metrics_baseline, axis=1)
 
-     # Save the DataFrame to a CSV file
+    # Save the DataFrame to a CSV file
     result_df.to_csv(os.path.join(output_dir, "single_metric_eval.csv"))
-
-    result_baseline_df.to_csv(os.path.join(output_dir, "single_metric_eval_baseline.csv"))
-
-def compute_ground_truth_correlations(output_dir: str, mean_realism_z_scored: pd.DataFrame, do_z_score: bool) -> None:
-    # Define the paths for the results files
-    single_metric_eval_path = os.path.join(output_dir, "single_metric_eval.csv")
-    single_metric_eval_baseline_path = os.path.join(output_dir, "single_metric_eval_baseline.csv")
-    
-
-    if not os.path.exists(single_metric_eval_path) or not os.path.exists(single_metric_eval_baseline_path):
-        print(f"Output files not found in {output_dir}. Ensure that 'main_single_metric_eval' has been run.")
-        return
-    
-    # Load the metric evaluation results
-    single_metric_df = pd.read_csv(single_metric_eval_path, index_col='Image')
-    single_metric_baseline_df = pd.read_csv(single_metric_eval_baseline_path, index_col='Image')
-
-    # Combine the metric evaluation results with the ground truth (realism scores)
-    combined_df = single_metric_df.merge(mean_realism_z_scored, left_index=True, right_index=True, how='inner')
-
-    # Initialize a list to store the correlation results
-    correlation_results = []
-    
-    # Select column of realism raw or z-scored
-    if do_z_score:
-        realism_column = 'Averaged Realism Score'
-    else:
-        realism_column = 'Averaged Z-Score'
-        
-    # Compute correlations for each metric
-    for metric in single_metric_df.columns:
-        pearson_corr = combined_df[metric].corr(combined_df[realism_column], method='pearson')
-        kendall_corr = combined_df[metric].corr(combined_df[realism_column], method='kendall')
-        correlation_results.append({
-            'Metric': metric,
-            'Pearson Correlation': pearson_corr,
-            'Kendall Correlation': kendall_corr
-        })
-    
-    # Convert the results into a DataFrame
-    correlation_df = pd.DataFrame(correlation_results)
-    
-    # Save the correlation results to a CSV file
-    correlation_csv_path = os.path.join(output_dir, "ground_truth_correlations.csv")
-    correlation_df.to_csv(correlation_csv_path, index=False)
-    
-    plot_metric_comparison(single_metric_df, single_metric_baseline_df, output_dir)
-
-    print(f"Correlation results saved to {correlation_csv_path}")
-
-
-
-def plot_metric_comparison(single_metric_df: pd.DataFrame, single_metric_baseline_df: pd.DataFrame, output_dir: str) -> None:
-    # Ensure that the dataframes have the same metrics
-    common_metrics = list(set(single_metric_df.columns) & set(single_metric_baseline_df.columns))
-    single_metric_df = single_metric_df[common_metrics]
-    single_metric_baseline_df = single_metric_baseline_df[common_metrics]
-    
-    # Create a grid of subplots
-    num_metrics = len(common_metrics)
-    num_cols = 4  # Number of columns in the grid
-    num_rows = (num_metrics + num_cols - 1) // num_cols  # Calculate number of rows needed
-    
-    fig, axs = plt.subplots(num_rows, num_cols, figsize=(5 * num_cols, 4 * num_rows))
-    axs = axs.flatten()  # Flatten the array of axes for easy iteration
-    
-    # Plot each metric
-    for i, metric in enumerate(common_metrics):
-        sns.kdeplot(single_metric_df[metric], ax=axs[i], label='Synthetic', color='red')
-        sns.kdeplot(single_metric_baseline_df[metric], ax=axs[i], label='Real', color='blue')
-        
-        axs[i].set_title(f"Comparison of {metric}")
-        axs[i].legend()
-        axs[i].set_xlabel('Metric Value')
-        axs[i].set_ylabel('Density')
-    
-    # Remove any empty subplots
-    for j in range(i + 1, len(axs)):
-        fig.delaxes(axs[j])
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'metric_comparison_real_vs_synthetic.png'))
-
-
 
 # TEST --------------------------------------
 

@@ -8,3 +8,4 @@ __pycache__
 foo.pypretrained/MUSIQ/musiq_spaq_ckpt.npz
 pretrained/MUSIQ/archive.tar
 pretrained/MUSIQ/saved_model.pb
+checkpoints/*
