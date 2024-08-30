@@ -10,12 +10,16 @@ import numpy as np
 import tensorflow as tf
 import torch
 
-from radimagenet_models.models.resnet import ResNet50
+import argparse
+import numpy as np
+import tensorflow as tf
+import torch
+from torchvision.models import densenet121
 
 torch.set_printoptions(precision=10)
+#from radimagenet_models.models.resnet import ResNet50
 
-input_path = "/media/walter/Storage/Projects/radimagenet-models/outputs/original_weights/RadImageNet-ResNet50_notop.h5"
-out_path = "/media/walter/Storage/Projects/radimagenet-models/outputs/pytorch_weights/RadImageNet-ResNet50_notop.pth"
+    
 
 
 def convert_conv(pytorch_conv, tf_conv):
@@ -62,7 +66,7 @@ def convert_stack(pytorch_stack, keras_model, stack_name, num_blocks):
     return pytorch_stack
 
 
-def main(args):
+def main_resnet50(args):
     pytorch_model = ResNet50()
     keras_model = tf.keras.models.load_model(args.input_path)
 
@@ -96,12 +100,134 @@ def main(args):
 
     # Saving model
     torch.save(pytorch_model.state_dict(), args.output_path)
+import numpy as np
+import h5py
+import torch
+from torchvision.models import densenet121
 
+def load_keras_weights(h5_path):
+    with h5py.File(h5_path, 'r') as f:
+        return {name: np.array(val) for name, val in f['model_weights'].items()}
+
+def find_matching_key(keras_weights, patterns):
+    for pattern in patterns:
+        for key in keras_weights.keys():
+            if pattern in key:
+                return key
+    return None
+
+def convert_conv(pytorch_conv, keras_weights, layer_name):
+    possible_patterns = [f"{layer_name}/kernel:", f"{layer_name}_kernel:", f"{layer_name}/weights:", f"{layer_name}_weights:", f"{layer_name}/"]
+    weight_key = find_matching_key(keras_weights, possible_patterns)
+    if weight_key is None:
+        return False, f"Couldn't find weight for layer: {layer_name}"
+    
+    pytorch_conv.weight.data = torch.tensor(np.transpose(keras_weights[weight_key], (3, 2, 0, 1)))
+    
+    bias_patterns = [f"{layer_name}/bias:", f"{layer_name}_bias:", f"{layer_name}/"]
+    bias_key = find_matching_key(keras_weights, bias_patterns)
+    if pytorch_conv.bias is not None and bias_key:
+        pytorch_conv.bias.data = torch.tensor(keras_weights[bias_key])
+    
+    return True, ""
+
+def convert_bn(pytorch_bn, keras_weights, layer_name):
+    param_names = ['gamma', 'beta', 'moving_mean', 'moving_variance']
+    pytorch_names = ['weight', 'bias', 'running_mean', 'running_var']
+    
+    for k_name, p_name in zip(param_names, pytorch_names):
+        possible_patterns = [f"{layer_name}/{k_name}:", f"{layer_name}_{k_name}:", f"{layer_name}/"]
+        key = find_matching_key(keras_weights, possible_patterns)
+        if key:
+            getattr(pytorch_bn, p_name).data = torch.tensor(keras_weights[key])
+        else:
+            return False, f"Couldn't find {k_name} for layer: {layer_name}"
+    
+    return True, ""
+
+def convert_dense_block(pytorch_block, keras_weights, block_name):
+    warnings = []
+    for i, layer in enumerate(pytorch_block):
+        success, warning = False, ""
+        if isinstance(layer, torch.nn.BatchNorm2d):
+            success, warning = convert_bn(layer, keras_weights, f'{block_name}_block{i//2+1}_1_bn')
+        elif isinstance(layer, torch.nn.Conv2d):
+            success, warning = convert_conv(layer, keras_weights, f'{block_name}_block{i//2+1}_1_conv')
+        if not success:
+            warnings.append(warning)
+    return warnings
+
+def convert_transition(pytorch_trans, keras_weights, trans_name):
+    warnings = []
+    success, warning = convert_bn(pytorch_trans.norm, keras_weights, f'{trans_name}_bn')
+    if not success:
+        warnings.append(warning)
+    success, warning = convert_conv(pytorch_trans.conv, keras_weights, f'{trans_name}_conv')
+    if not success:
+        warnings.append(warning)
+    return warnings
+
+class DenseNet121NoTop(torch.nn.Module):
+    def __init__(self, original_model):
+        super().__init__()
+        self.features = original_model.features
+
+    def forward(self, x):
+        features = self.features(x)
+        out = torch.nn.functional.relu(features, inplace=True)
+        return out
+
+def main():
+    input_path = "/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/syntheva/pretrained/RadImageNet_models/RadImageNet-DenseNet121_notop.h5"
+    output_path = "/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/syntheva/pretrained/RadImageNet_models/RadImageNet-DenseNet121_notop.pth"
+
+    original_model = densenet121(pretrained=False)
+    pytorch_model = DenseNet121NoTop(original_model)
+    keras_weights = load_keras_weights(input_path)
+
+    all_warnings = []
+
+    # Convert initial convolution and batch norm
+    success, warning = convert_conv(pytorch_model.features.conv0, keras_weights, 'conv1')
+    if not success:
+        all_warnings.append(warning)
+    success, warning = convert_bn(pytorch_model.features.norm0, keras_weights, 'conv1')
+    if not success:
+        all_warnings.append(warning)
+
+    # Convert dense blocks and transitions
+    for i in range(4):
+        block_name = f'conv{i+2}'
+        warnings = convert_dense_block(getattr(pytorch_model.features, f'denseblock{i+1}'), keras_weights, block_name)
+        all_warnings.extend(warnings)
+        if i < 3:  # No transition after the last dense block
+            trans_name = f'pool{i+2}'
+            warnings = convert_transition(getattr(pytorch_model.features, f'transition{i+1}'), keras_weights, trans_name)
+            all_warnings.extend(warnings)
+
+    # Convert final batch norm
+    success, warning = convert_bn(pytorch_model.features.norm5, keras_weights, 'bn')
+    if not success:
+        all_warnings.append(warning)
+
+    # Save the converted model
+    torch.save(pytorch_model.state_dict(), output_path)
+    print(f"Converted model saved to {output_path}")
+
+    # Print warnings
+    if all_warnings:
+        print("\nWarnings during conversion:")
+        for warning in all_warnings:
+            print(f"- {warning}")
+    else:
+        print("\nNo warnings during conversion.")
+
+    # Perform a forward pass and print the shape of the output
+    pytorch_model.eval()
+    with torch.no_grad():
+        dummy_input = torch.randn(1, 3, 224, 224)  # Batch size 1, 3 color channels, 224x224 image
+        output = pytorch_model(dummy_input)
+        print(f"\nShape of the generated feature map: {output.shape}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input_path", help="Path to the original RadImageNet-ResNet50_notop.h5 file.")
-    parser.add_argument("--output_path", help="Path to save the converted .pth file.")
-    args = parser.parse_args()
-
-    main(args)
+    main()

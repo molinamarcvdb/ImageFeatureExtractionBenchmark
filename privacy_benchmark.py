@@ -11,6 +11,8 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense
 from torch.utils.data import Dataset
 from utils import load_model_from_hub
+import re
+from collections import OrderedDict
 
 class SiameseNetwork(nn.Module):
     def __init__(self, backbone_model, backbone_type='torch', n_features=128):
@@ -21,36 +23,30 @@ class SiameseNetwork(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         if self.backbone_type == 'torch':
-            if isinstance(self.backbone, models.ResNet):
+            if isinstance(self.backbone, models.DenseNet):
+                in_features = self.backbone.features[-1].num_features
+            elif isinstance(self.backbone, models.ResNet):
                 in_features = self.backbone.fc.in_features
-                self.backbone.fc = nn.Linear(in_features, self.n_features)
             else:
                 raise ValueError("Unsupported Torch model type")
+            
+            self.feature_extractor = nn.Sequential(*list(self.backbone.children())[:-1])
+            self.fc = nn.Linear(in_features, self.n_features)
 
         elif self.backbone_type == 'huggingface':
-            # Get the number of features from the last layer of the backbone
+            # Huggingface model handling remains the same
             in_features = self.backbone.config.hidden_size
-            
-            # Create a new linear layer
             self.new_head = nn.Linear(in_features, self.n_features)
-            
-            # If you want to freeze the backbone and only train the new head
             for param in self.backbone.parameters():
                 param.requires_grad = False
             for param in self.new_head.parameters():
                 param.requires_grad = True
 
         elif self.backbone_type == 'keras':
-            # Remove the top layer
+            # Keras model handling remains the same
             base_model = Model(inputs=self.backbone.input, outputs=self.backbone.layers[-2].output)
-
-            # Get the number of features from the last layer
             in_features = base_model.output.shape[-1]
-
-            # Add a new Dense layer with n_features outputs
             new_output = Dense(n_features, name='new_fc')(base_model.output)
-
-            # Create a new model
             self.backbone = Model(inputs=base_model.input, outputs=new_output)
         else:
             raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
@@ -60,16 +56,17 @@ class SiameseNetwork(nn.Module):
 
     def forward_once(self, x):
         if self.backbone_type == 'torch':
-            output = self.backbone(x)
+            features = self.feature_extractor(x)
+            features = features.view(features.size(0), -1)
+            output = self.fc(features)
         elif self.backbone_type == 'huggingface':
             x = x.permute(0,3,2,1)
             outputs = self.backbone(x)
             last_hidden_state = outputs.last_hidden_state
-            #pooled_output = torch.mean(last_hidden_state, dim=1)
             output = self.new_head(last_hidden_state)
         elif self.backbone_type == 'keras':
             output = self.backbone.predict(x.cpu().numpy())
-            output = torch.tensor(output).to(x.device)  # Convert NumPy array to PyTorch tensor
+            output = torch.tensor(output).to(x.device)
         else:
             raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
 
@@ -78,7 +75,8 @@ class SiameseNetwork(nn.Module):
 
     def forward(self, input1=None, input2=None, resnet_only=False):
         if resnet_only:
-            return self.backbone(input1)  # Only return the features from one input
+            features = self.feature_extractor(input1)
+            return features.view(features.size(0), -1)  # Return flattened features
 
         # Forward pass for both inputs through the network
         output1 = self.forward_once(input1)
@@ -92,68 +90,89 @@ class SiameseNetwork(nn.Module):
 
         return output, output1, output2
 
+def remap_keys(state_dict):
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        new_key = re.sub(r'norm\.(\d+)', r'norm\1', k)
+        new_key = re.sub(r'conv\.(\d+)', r'conv\1', new_key)
+        new_state_dict[new_key] = v
+    return new_state_dict
+
+def load_and_remap_state_dict(model, filename, repo_id='molinamarc/syntheva'):
+    try:
+        state_dict = load_model_from_hub(repo_id, filename)
+        remapped_state_dict = remap_keys(state_dict)
+        
+        # Try to load with strict=True first
+        try:
+            model.load_state_dict(remapped_state_dict, strict=True)
+            print(f"Successfully loaded {filename} with strict=True")
+        except RuntimeError as e:
+            print(f"Couldn't load {filename} with strict=True. Trying with strict=False. Error: {str(e)}")
+            model.load_state_dict(remapped_state_dict, strict=False)
+            print(f"Successfully loaded {filename} with strict=False")
+        
+        return model
+    except Exception as e:
+        print(f"Error loading {filename}: {str(e)}")
+        return model  # Return the original model if loading fails
+
 def initialize_model(network_name):
     if network_name.lower() == "resnet50":
         backbone = models.resnet50(pretrained=False)
-        backbone.load_state_dict(load_model_from_hub('molinamarc/syntheva', 'resnet50-19c8e357.pth'))
+        backbone = load_and_remap_state_dict(backbone, 'resnet50-19c8e357.pth')
         backbone_type = 'torch'
     elif network_name.lower() == "resnet18":
-        backbone = models.resnet18(pretrained=True)
+        backbone = models.resnet18(pretrained=False)
+        backbone = load_and_remap_state_dict(backbone, 'resnet18-f37072fd.pth')
         backbone_type = 'torch'
-    
-    elif network_name.lower() == "clip":
-        backbone = CLIPModel.from_pretrained("openai/clip-vit-large-patch14", output_hidden_states=True).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-        backbone_type = 'huggingface'
-    
-    elif network_name.lower() == "rad_clip":
-        backbone = CLIPModel.from_pretrained("flaviagiammarino/pubmed-clip-vit-base-patch32", output_hidden_states=True).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-        backbone_type = 'huggingface'
-    
-    elif network_name.lower() == "rad_dino":
-        backbone = AutoModel.from_pretrained("microsoft/rad-dino", output_hidden_states=True).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-        backbone_type = 'huggingface'
-
-    elif network_name.lower() == "dino":
-        backbone = AutoModel.from_pretrained("facebook/dinov2-base", output_hidden_states=True).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-        backbone_type = 'huggingface'
-    
     elif network_name.lower() == "inception":
-        backbone = InceptionV3(weights='imagenet', include_top=False, pooling='avg')
-        backbone_type = 'keras'
-    
+        backbone = models.inception_v3(pretrained=False)
+        backbone = load_and_remap_state_dict(backbone, 'inception_v3.pth')
+        backbone_type = 'torch'
+    elif network_name.lower() == "densenet121":
+        backbone = models.densenet121(pretrained=False)
+        backbone = load_and_remap_state_dict(backbone, 'densenet121-a639ec97.pth')
+        backbone_type = 'torch'
+    elif network_name.lower() == "clip":
+        backbone = CLIPModel.from_pretrained("openai/clip-vit-large-patch14", output_hidden_states=True)
+        backbone_type = 'huggingface'
+    elif network_name.lower() == "rad_clip":
+        backbone = CLIPModel.from_pretrained("flaviagiammarino/pubmed-clip-vit-base-patch32", output_hidden_states=True)
+        backbone_type = 'huggingface'
+    elif network_name.lower() == "rad_dino":
+        backbone = AutoModel.from_pretrained("microsoft/rad-dino", output_hidden_states=True)
+        backbone_type = 'huggingface'
+    elif network_name.lower() == "dino":
+        backbone = AutoModel.from_pretrained("facebook/dinov2-base", output_hidden_states=True)
+        backbone_type = 'huggingface'
     elif network_name.lower() == "rad_inception":
         backbone = InceptionV3(weights='imagenet', include_top=False, pooling='avg')
         backbone_type = 'keras'
-    
     elif network_name.lower() == "resnet50_keras":
         backbone = ResNet50(weights='imagenet', include_top=False, pooling='avg')
         backbone_type = 'keras'
-
     elif network_name.lower() == "rad_resnet50":
-        backbone = ResNet50(weights='imagenet', include_top=False, pooling='avg')
-        backbone_type = 'keras'
-    
+        backbone = models.resnet50(pretrained=False)
+        backbone = load_and_remap_state_dict(backbone, 'RadImageNet-ResNet50_notop.pth')
+        backbone_type = 'torch'
     elif network_name.lower() == "inceptionresnet":
         backbone = InceptionResNetV2(weights='imagenet', include_top=False, pooling='avg')
         backbone_type = 'keras'
-    
     elif network_name.lower() == "rad_inceptionresnet":
         backbone = InceptionResNetV2(weights='imagenet', include_top=False, pooling='avg')
         backbone_type = 'keras'
-    
-    elif network_name.lower() == "densenet":
-        backbone = DenseNet121(weights='imagenet', include_top=False, pooling='avg')
-        backbone_type = 'keras'
-    
     elif network_name.lower() == "rad_densenet":
-        backbone = DenseNet121(weights='imagenet', include_top=False, pooling='avg')
-        backbone_type = 'keras'
-    
+        backbone = models.densenet121(pretrained=False)
+        backbone = load_and_remap_state_dict(backbone, 'RadImageNet-DenseNet121_notop.pth')
+        backbone_type = 'torch'
     else:
         raise ValueError(f"Unsupported network name: {network_name}")
 
-    return backbone, backbone_type
+    if backbone_type in ['torch', 'huggingface']:
+        backbone = backbone.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
+    return backbone, backbone_type
 
 import os
 import random
@@ -457,7 +476,7 @@ def setup_training(root_dir, network_name, n_features=128, batch_size=32, target
 
 train_loader, val_loader, device = setup_training(
     root_dir='./data/real/',
-    network_name='resnet50',
+    network_name='densenet121',
     n_features=128,
     batch_size=32, 
     target_resolution=(512, 512), 
