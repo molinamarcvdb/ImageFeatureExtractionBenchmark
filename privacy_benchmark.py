@@ -433,7 +433,7 @@ def setup_training(root_dir, network_name, **kwargs):
     os.makedirs(ckpt_dir, exist_ok=True)
     
     # Set up TensorBoard writer
-    tb_log_dir = os.path.join('./log/', run_name)
+    tb_log_dir = os.path.join(ckpt_dir, './log/', run_name)
     writer = SummaryWriter(log_dir=tb_log_dir)
     
     # Training loop
@@ -483,11 +483,29 @@ def setup_training(root_dir, network_name, **kwargs):
             val_loss += LossTr(torch.cat((PosEmb11, PosEmb12), dim=0), torch.cat((Labels, Labels), dim=0)).item()       
             similarity_pos = cosine_similarity(PosEmb11, PosEmb12).cpu().numpy()
             similarity_neg = cosine_similarity(PosEmb11, PosEmb11).cpu().numpy()
+          
+            # Handle cases where batch size might be 1
+            if similarity_pos.ndim == 0:
+                pos_sim.append(similarity_pos.item())
+            else:
+                pos_sim.extend(np.diag(similarity_pos))
+            
+            if similarity_neg.ndim == 0:
+                neg_sim.append(similarity_neg.item())
+            elif similarity_neg.ndim == 1:
+                neg_sim.extend(similarity_neg)
+            else:
+                neg_sim.extend(similarity_neg[np.triu_indices_from(similarity_neg, k=1)])
+            
+            if similarity_pos.ndim == 0:
+                neg_sim_aug.append(similarity_pos.item())
+            elif similarity_pos.ndim == 1:
+                neg_sim_aug.extend(similarity_pos)
+            else:
+                neg_sim_aug.extend(similarity_pos[np.triu_indices_from(similarity_pos, k=1)])
+        
 
-            pos_sim.append(np.diag(similarity_pos))
-            neg_sim.append(similarity_neg[np.triu_indices_from(similarity_neg, k=1)])
-            neg_sim_aug.append(similarity_pos[np.triu_indices_from(similarity_pos, k=1)])
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
         val_loss /= (val_step + 1)
         val_losses.append(val_loss)
 
