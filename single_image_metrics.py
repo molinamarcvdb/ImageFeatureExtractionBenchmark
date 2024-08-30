@@ -1,4 +1,6 @@
 import os
+import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
 import torch
 from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure, PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure, VisualInformationFidelity
@@ -332,6 +334,86 @@ def main_single_metric_eval(synthetic_images_dir: str, real_images_dir: str, out
 
     # Save the DataFrame to a CSV file
     result_df.to_csv(os.path.join(output_dir, "single_metric_eval.csv"))
+
+def compute_ground_truth_correlations(output_dir: str, mean_realism_z_scored: pd.DataFrame, do_z_score: bool) -> None:
+    # Define the paths for the results files
+    single_metric_eval_path = os.path.join(output_dir, "single_metric_eval.csv")
+    single_metric_eval_baseline_path = os.path.join(output_dir, "single_metric_eval_baseline.csv")
+    
+
+    if not os.path.exists(single_metric_eval_path) or not os.path.exists(single_metric_eval_baseline_path):
+        print(f"Output files not found in {output_dir}. Ensure that 'main_single_metric_eval' has been run.")
+        return
+    
+    # Load the metric evaluation results
+    single_metric_df = pd.read_csv(single_metric_eval_path, index_col='Image')
+    single_metric_baseline_df = pd.read_csv(single_metric_eval_baseline_path, index_col='Image')
+
+    # Combine the metric evaluation results with the ground truth (realism scores)
+    combined_df = single_metric_df.merge(mean_realism_z_scored, left_index=True, right_index=True, how='inner')
+
+    # Initialize a list to store the correlation results
+    correlation_results = []
+    
+    # Select column of realism raw or z-scored
+    if do_z_score:
+        realism_column = 'Averaged Realism Score'
+    else:
+        realism_column = 'Averaged Z-Score'
+        
+    # Compute correlations for each metric
+    for metric in single_metric_df.columns:
+        pearson_corr = combined_df[metric].corr(combined_df[realism_column], method='pearson')
+        kendall_corr = combined_df[metric].corr(combined_df[realism_column], method='kendall')
+        correlation_results.append({
+            'Metric': metric,
+            'Pearson Correlation': pearson_corr,
+            'Kendall Correlation': kendall_corr
+        })
+    
+    # Convert the results into a DataFrame
+    correlation_df = pd.DataFrame(correlation_results)
+    
+    # Save the correlation results to a CSV file
+    correlation_csv_path = os.path.join(output_dir, "ground_truth_correlations.csv")
+    correlation_df.to_csv(correlation_csv_path, index=False)
+    
+    plot_metric_comparison(single_metric_df, single_metric_baseline_df, output_dir)
+
+    print(f"Correlation results saved to {correlation_csv_path}")
+
+def plot_metric_comparison(single_metric_df: pd.DataFrame, single_metric_baseline_df: pd.DataFrame, output_dir: str) -> None:
+    # Ensure that the dataframes have the same metrics
+    common_metrics = list(set(single_metric_df.columns) & set(single_metric_baseline_df.columns))
+    single_metric_df = single_metric_df[common_metrics]
+    single_metric_baseline_df = single_metric_baseline_df[common_metrics]
+    
+    # Create a grid of subplots
+    num_metrics = len(common_metrics)
+    num_cols = 4  # Number of columns in the grid
+    num_rows = (num_metrics + num_cols - 1) // num_cols  # Calculate number of rows needed
+    
+    fig, axs = plt.subplots(num_rows, num_cols, figsize=(5 * num_cols, 4 * num_rows))
+    axs = axs.flatten()  # Flatten the array of axes for easy iteration
+    
+    # Plot each metric
+    for i, metric in enumerate(common_metrics):
+        sns.kdeplot(single_metric_df[metric], ax=axs[i], label='Synthetic', color='red')
+        sns.kdeplot(single_metric_baseline_df[metric], ax=axs[i], label='Real', color='blue')
+        
+        axs[i].set_title(f"Comparison of {metric}")
+        axs[i].legend()
+        axs[i].set_xlabel('Metric Value')
+        axs[i].set_ylabel('Density')
+    
+    # Remove any empty subplots
+    for j in range(i + 1, len(axs)):
+        fig.delaxes(axs[j])
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'metric_comparison_real_vs_synthetic.png'))
+
+
 
 # TEST --------------------------------------
 

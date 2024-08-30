@@ -1,7 +1,7 @@
 # Configuration file for feature extraction and metric computation
 feature_extraction: false
 eval_only: false
-sing_image_eval: true
+sing_image_eval: false
 realism_correlation: true
 
 
@@ -52,4 +52,15 @@ jsonl_path:
 #:- '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/data/turing_tests/evaluations_4e26daae-530d-430b-81be-107704de6a9e_MARC_M.jsonl'
 timestamp: '20240822_155631' #'20240821_151647' # for specific features previously computed, use with feature_extraction=false
 do_z_score: false
-
+# New parameters for privacy benchmark
+privacy_benchmark: true
+n_features: 128
+target_resolution: [512, 512]
+split_ratio: 0.8
+num_workers: 4
+pin_memory: true
+base_lr: 0.001
+n_epochs: 1
+temperature: 0.5
+save_model_interval: 5
+multi_gpu: true

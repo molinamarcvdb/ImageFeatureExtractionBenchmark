@@ -13,6 +13,7 @@ from torch.utils.data import Dataset
 from utils import load_model_from_hub
 import re
 from collections import OrderedDict
+from datetime import datetime
 
 class SiameseNetwork(nn.Module):
     def __init__(self, backbone_model, backbone_type='torch', n_features=128):
@@ -309,32 +310,51 @@ from tqdm import tqdm
 import numpy as np
 import torchio as tio
 
-def setup_training(root_dir, network_name, n_features=128, batch_size=32, target_resolution=(512, 512), split_ratio=0.8, num_workers=4, pin_memory=True, base_lr=1e-3, n_epochs=10, temperature=0.5, save_model_interval=5, multi_gpu=False):
-    """
+import yaml
+import os
+import torch
+from torch.utils.data import DataLoader, random_split
+from torch.nn import CosineSimilarity
+from torch.utils.tensorboard import SummaryWriter
+import torchio as tio
+from tqdm import tqdm
+import numpy as np
 
+def setup_training(root_dir, network_name, **kwargs):
+    """
     Sets up the dataset, dataloaders, and device for training, and initializes the training process.
     
     Args:
         root_dir (str): Path to the root directory containing the image data.
-        batch_size (int): Batch size for training and validation dataloaders.
-        target_resolution (tuple): Target resolution for resizing images.
-        split_ratio (float): Ratio to split dataset into training and validation sets.
-        num_workers (int): Number of workers for the DataLoader.
-        pin_memory (bool): Whether to pin memory for DataLoader.
-        base_lr (float): Base learning rate for the optimizer.
-        n_epochs (int): Number of epochs for training.
-        temperature (float): Temperature parameter for NT-Xent loss.
-        save_model_interval (int): Interval for saving the model.
-        multi_gpu (bool): Whether to use multiple GPUs.
-
+        network_name (str): Name of the network architecture to use.
+        **kwargs: Additional keyword arguments to customize the training setup.
+    
     Returns:
         DataLoader, DataLoader, torch.device: Training DataLoader, Validation DataLoader, and device.
     """
     
+    # Default values
+    defaults = {
+        'n_features': 128,
+        'batch_size': 32,
+        'target_resolution': (512, 512),
+        'split_ratio': 0.8,
+        'num_workers': 4,
+        'pin_memory': True,
+        'base_lr': 1e-3,
+        'n_epochs': 10,
+        'temperature': 0.5,
+        'save_model_interval': 5,
+        'multi_gpu': False
+    }
+    
+    # Update defaults with provided kwargs
+    config = {**defaults, **kwargs}
+    
     # Define preprocessing and transforms
     preprocessing_transforms = tio.Compose([
         tio.RescaleIntensity(out_min_max=(0, 1)),
-        tio.Resize(target_resolution)
+        tio.Resize(config['target_resolution'])
     ])
     
     train_transforms = tio.Compose([
@@ -348,13 +368,13 @@ def setup_training(root_dir, network_name, n_features=128, batch_size=32, target
     dataset = ContrastiveDataset(
         root_dir=root_dir,
         split='train',
-        target_resolution=target_resolution,
+        target_resolution=config['target_resolution'],
         augmentation=True
     )
     
     # Calculate split sizes
     dataset_size = len(dataset)
-    train_size = int(split_ratio * dataset_size)
+    train_size = int(config['split_ratio'] * dataset_size)
     val_size = dataset_size - train_size
     
     # Split dataset into training and validation
@@ -363,49 +383,63 @@ def setup_training(root_dir, network_name, n_features=128, batch_size=32, target
     # Create DataLoaders
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
+        batch_size=config['batch_size'],
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=True  # Set to True for persistent worker processes
+        num_workers=config['num_workers'],
+
+        persistent_workers=True
     )
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=config['batch_size'],
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=True  # Set to True for persistent worker processes
+        num_workers=config['num_workers'],
+        pin_memory=config['pin_memory'],
+        persistent_workers=True
     )
     
     # Set up device
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     
     # Define model
-    backbone_model, backbone_type = initialize_model(network_name)
-    
-    model = SiameseNetwork(backbone_model, backbone_type, n_features)
-    
-    if multi_gpu:
+    try:
+        backbone_model, backbone_type = initialize_model(network_name)
+        
+        model = SiameseNetwork(backbone_model, backbone_type, config['n_features'])
+    except ValueError as e:
+        print(network_name, e)
+        raise ValueError(f'Error {e} with {network_name}')
+
+    if config['multi_gpu']:
         model = torch.nn.DataParallel(model)
     model.to(device)
     
     # Define optimizer, scheduler, and loss function
-    optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs, eta_min=base_lr / 2.0)
-    LossTr = NTXentLoss(temperature=temperature)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['base_lr'])
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['n_epochs'], eta_min=config['base_lr'] / 2.0)
+    LossTr = NTXentLoss(temperature=config['temperature'])
     cosine_similarity = CosineSimilarity()
     
     # Set up TensorBoard writer
-    ckpt_dir = './checkpoints'
+    # Generate timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Create a unique directory name combining timestamp and network name
+    run_name = f"{timestamp}_{network_name}"
+    
+    # Set up checkpoint directory
+    ckpt_dir = os.path.join('./checkpoints', run_name)
     os.makedirs(ckpt_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir=ckpt_dir)
+    
+    # Set up TensorBoard writer
+    tb_log_dir = os.path.join('./log/', run_name)
+    writer = SummaryWriter(log_dir=tb_log_dir)
     
     # Training loop
     epoch_losses = []
     val_losses = []
-    for epoch in range(n_epochs):
+    for epoch in range(config['n_epochs']):
         progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), ncols=110)
         progress_bar.set_description(f"Epoch {epoch}")    
 
@@ -465,15 +499,15 @@ def setup_training(root_dir, network_name, n_features=128, batch_size=32, target
         writer.add_scalar('Val/Loss', val_losses[-1], epoch)
 
         # Save model checkpoints
-        if (epoch + 1) % save_model_interval == 0 or epoch == 0:  
-            if multi_gpu:
+        if (epoch + 1) % config['save_model_interval'] == 0 or epoch == 0:
+            if config['multi_gpu']:
                 torch.save(model.module.state_dict(), os.path.join(ckpt_dir, f"model_epoch_{epoch}.pth"))
             else:
                 torch.save(model.state_dict(), os.path.join(ckpt_dir, f"model_epoch_{epoch}.pth"))
         
         # Save best model
         if (epoch > 1) and (val_loss < min(val_losses[:-1])):
-            if multi_gpu:
+            if config['multi_gpu']:
                 torch.save(model.module.state_dict(), os.path.join(ckpt_dir, "model_best.pth"))
             else:
                 torch.save(model.state_dict(), os.path.join(ckpt_dir, "model_best.pth"))
@@ -483,40 +517,22 @@ def setup_training(root_dir, network_name, n_features=128, batch_size=32, target
 
     return train_loader, val_loader, device
 
-
-def train_by_models(real_data_dir: str, network_names: list):
-    for network_name in network_names:
+def train_by_models(real_data_dir: str, network_names: list, **kwargs):
+    """
+    Train models using specified network architectures and configurations.
     
+    Args:
+        real_data_dir (str): Directory containing the real data.
+        network_names (list): List of network architectures to train.
+        config_path (str, optional): Path to the YAML configuration file.
+        **kwargs: Additional keyword arguments to override config file settings.
+    """
+    
+    for network_name in network_names:
+        print(f"Training {network_name}...")
         train_loader, val_loader, device = setup_training(
-            root_dir='./data/real/',
+            root_dir=real_data_dir,
             network_name=network_name,
-            n_features=128,
-            batch_size=32, 
-            target_resolution=(512, 512), 
-            split_ratio=0.8, 
-            num_workers=4, 
-            pin_memory=True, 
-            base_lr=1e-3, 
-            n_epochs=10, 
-            temperature=0.5, 
-            save_model_interval=5, 
-            multi_gpu=True
         )
+        
 
-
-
-#backbones = ["dino", "resnet50_keras", "rad_inception", "inception", "rad_densenet"]  # Add more backbones as needed
-#for backbone_name in backbones:
-#
-#    n_features = 128
-#    backbone_model, backbone_type = initialize_model(backbone_name)
-#    siamese_network = SiameseNetwork(backbone_model=backbone_model, backbone_type=backbone_type, n_features=n_features)
-#    device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#    # Example usage with some input tensors
-#    input1 = torch.randn(1, 224, 224, 3).to(device)  # Example input, adjust according to your needs
-#    input2 = torch.randn(1, 224, 224, 3).to(device)
-#    
-#    # Forward pass
-#    output, output1, output2 = siamese_network(input1=input1, input2=input2)
-#    print(f"Output using {backbone_name}: {output.shape, output1.shape, output2.shape }")
-#

@@ -10,6 +10,7 @@ from metrics import calculate_metrics
 from utils import link_azure_local, get_sets_content, get_realism_set_dict, realism_corr_net
 from single_image_metrics import main_single_metric_eval, compute_ground_truth_correlations
 from realism import realism_handling
+from privacy_benchmark import setup_training 
 from tqdm import tqdm
 
 def load_config(config_path):
@@ -229,6 +230,33 @@ def main():
         #COmpute correlations of single image metric NR and FR with human judgement
         output_dir = os.path.join('data', 'features', timestamp)
         compute_ground_truth_correlations(output_dir, mean_realism_z_scored, do_z_score)
+    
+    if config.get('privacy_benchmark', False):
+        print("Running privacy benchmark...")
+        network_list = ['inception', 'resnet50', 'resnet18', 'clip', 'densenet', 'rad_clip', 'rad_dino', 'dino', 'rad_inception', 'rad_resnet50', 'rad_densenet']
+        # Extract relevant parameters from config
+        privacy_params = {
+            'n_features': config.get('n_features', 128),
+            'batch_size': config.get('batch_size', 32),
+            'target_resolution': tuple(config.get('target_resolution', (512, 512))),
+            'split_ratio': config.get('split_ratio', 0.8),
+            'num_workers': config.get('num_workers', 4),
+            'pin_memory': config.get('pin_memory', True),
+            'base_lr': config.get('base_lr', 1e-3),
+            'n_epochs': config.get('n_epochs', 10),
+            'temperature': config.get('temperature', 0.5),
+            'save_model_interval': config.get('save_model_interval', 5),
+            'multi_gpu': config.get('multi_gpu', False)
+        }
+
+        for network_name in config['networks']:
+            print(f"Processing network: {network_name}")
+            if network_name in network_list:
+                train_loader, val_loader, device = setup_training(
+                    root_dir=config['real_dataset_path'],
+                    network_name=network_name,
+                    **privacy_params
+                )
 
 if __name__ == "__main__":
     main()
