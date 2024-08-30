@@ -128,11 +128,11 @@ def load_and_remap_state_dict(model, filename, repo_id='molinamarc/syntheva'):
 def initialize_model(network_name):
     if network_name.lower() == "resnet50":
         backbone = models.resnet50(pretrained=False)
-        backbone = load_and_remap_state_dict(backbone, 'resnet50-19c8e357.pth')
+        backbone = load_and_remap_state_dict(backbone, 'resnet50.pth')
         backbone_type = 'torch'
     elif network_name.lower() == "resnet18":
         backbone = models.resnet18(pretrained=False)
-        backbone = load_and_remap_state_dict(backbone, 'resnet18-f37072fd.pth')
+        backbone = load_and_remap_state_dict(backbone, 'resnet18.pth')
         backbone_type = 'torch'
     elif network_name.lower() == "inception":
         backbone = models.inception_v3(pretrained=False)
@@ -140,7 +140,7 @@ def initialize_model(network_name):
         backbone_type = 'torch'
     elif network_name.lower() == "densenet121":
         backbone = models.densenet121(pretrained=False)
-        backbone = load_and_remap_state_dict(backbone, 'densenet121-a639ec97.pth')
+        backbone = load_and_remap_state_dict(backbone, 'densenet121.pth')
         backbone_type = 'torch'
     elif network_name.lower() == "clip":
         backbone = CLIPModel.from_pretrained("openai/clip-vit-large-patch14", output_hidden_states=True)
@@ -483,21 +483,25 @@ def setup_training(root_dir, network_name, n_features=128, batch_size=32, target
 
     return train_loader, val_loader, device
 
-train_loader, val_loader, device = setup_training(
-    root_dir='./data/real/',
-    network_name='rad_inception',
-    n_features=128,
-    batch_size=32, 
-    target_resolution=(512, 512), 
-    split_ratio=0.8, 
-    num_workers=4, 
-    pin_memory=True, 
-    base_lr=1e-3, 
-    n_epochs=10, 
-    temperature=0.5, 
-    save_model_interval=5, 
-    multi_gpu=True
-)
+
+def train_by_models(real_data_dir: str, network_names: list):
+    for network_name in network_names:
+    
+        train_loader, val_loader, device = setup_training(
+            root_dir='./data/real/',
+            network_name=network_name,
+            n_features=128,
+            batch_size=32, 
+            target_resolution=(512, 512), 
+            split_ratio=0.8, 
+            num_workers=4, 
+            pin_memory=True, 
+            base_lr=1e-3, 
+            n_epochs=10, 
+            temperature=0.5, 
+            save_model_interval=5, 
+            multi_gpu=True
+        )
 
 
 
