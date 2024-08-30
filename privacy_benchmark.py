@@ -23,13 +23,21 @@ class SiameseNetwork(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         if self.backbone_type == 'torch':
-            if isinstance(self.backbone, models.DenseNet):
-                in_features = self.backbone.features[-1].num_features
-            elif isinstance(self.backbone, models.ResNet):
+            if isinstance(self.backbone, models.ResNet):
                 in_features = self.backbone.fc.in_features
+                self.backbone.fc = nn.Linear(in_features, self.n_features)
+            elif isinstance(self.backbone, models.DenseNet):
+                in_features = self.backbone.classifier.in_features
+                self.backbone.classifier = nn.Linear(in_features, self.n_features)
+            elif isinstance(self.backbone, models.Inception3):
+                in_features = self.backbone.fc.in_features
+                self.backbone.fc = nn.Linear(in_features, self.n_features)
+                # Remove the auxiliary classifier if it exists
+                if hasattr(self.backbone, 'AuxLogits'):
+                    self.backbone.AuxLogits = None
             else:
                 raise ValueError("Unsupported Torch model type")
-            
+
             self.feature_extractor = nn.Sequential(*list(self.backbone.children())[:-1])
             self.fc = nn.Linear(in_features, self.n_features)
 
@@ -147,8 +155,9 @@ def initialize_model(network_name):
         backbone = AutoModel.from_pretrained("facebook/dinov2-base", output_hidden_states=True)
         backbone_type = 'huggingface'
     elif network_name.lower() == "rad_inception":
-        backbone = InceptionV3(weights='imagenet', include_top=False, pooling='avg')
-        backbone_type = 'keras'
+        backbone = models.inception_v3(pretrained=False)
+        backbone = load_and_remap_state_dict(backbone, 'RadImageNet-InceptionV3_notop.pth')
+        backbone_type = 'torch'
     elif network_name.lower() == "resnet50_keras":
         backbone = ResNet50(weights='imagenet', include_top=False, pooling='avg')
         backbone_type = 'keras'
@@ -476,7 +485,7 @@ def setup_training(root_dir, network_name, n_features=128, batch_size=32, target
 
 train_loader, val_loader, device = setup_training(
     root_dir='./data/real/',
-    network_name='densenet121',
+    network_name='rad_inception',
     n_features=128,
     batch_size=32, 
     target_resolution=(512, 512), 
