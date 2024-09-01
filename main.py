@@ -233,12 +233,12 @@ def main():
     
     if config.get('privacy_benchmark', False):
         print("Running privacy benchmark...")
-        network_list = ['inception', 'resnet50', 'resnet18', 'clip', 'densenet', 'rad_clip', 'rad_dino', 'dino', 'rad_inception', 'rad_resnet50', 'rad_densenet']
+        network_list = ['inception', 'resnet50', 'resnet18', 'clip', 'densenet121', 'rad_clip', 'rad_dino', 'dino', 'rad_inception', 'rad_resnet50', 'rad_densenet']
         # Extract relevant parameters from config
         privacy_params = {
             'n_features': config.get('n_features', 128),
             'batch_size': config.get('batch_size', 32),
-            'target_resolution': tuple(config.get('target_resolution', (512, 512))),
+            'target_resolution': tuple(config.get('target_resolution', (224, 224))),
             'split_ratio': config.get('split_ratio', 0.8),
             'num_workers': config.get('num_workers', 4),
             'pin_memory': config.get('pin_memory', True),
