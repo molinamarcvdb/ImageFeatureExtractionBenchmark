@@ -10,8 +10,9 @@ from metrics import calculate_metrics
 from utils import link_azure_local, get_sets_content, get_realism_set_dict, realism_corr_net
 from single_image_metrics import main_single_metric_eval, compute_ground_truth_correlations
 from realism import realism_handling
-from privacy_benchmark import setup_training 
+from privacy_benchmark import setup_training, adversarial_dataloading, visualize_augmentations, load_best_model_for_inference, inference_and_save_embeddings, compute_distances_and_plot   
 from tqdm import tqdm
+import traceback
 
 def load_config(config_path):
     with open(config_path, 'r') as file:
@@ -137,6 +138,7 @@ def main():
     metrics = config['metrics']
     do_z_score = config['do_z_score']
 
+    network_list = ['inception', 'resnet50', 'resnet18', 'clip', 'densenet121', 'rad_clip', 'rad_dino', 'dino', 'rad_inception', 'rad_resnet50', 'rad_densenet']
 # Create a timestamp for the run
     global timestamp
     
@@ -233,7 +235,6 @@ def main():
     
     if config.get('privacy_benchmark', False):
         print("Running privacy benchmark...")
-        network_list = ['inception', 'resnet50', 'resnet18', 'clip', 'densenet121', 'rad_clip', 'rad_dino', 'dino', 'rad_inception', 'rad_resnet50', 'rad_densenet']
         # Extract relevant parameters from config
         privacy_params = {
             'n_features': config.get('n_features', 128),
@@ -257,6 +258,36 @@ def main():
                     network_name=network_name,
                     **privacy_params
                 )
+    if config.get('adversarial_privacy_assesment', False):
 
+        output_dir = './embeddings'
+
+        #visualize_augmentations(adversarial_dloutput_dir = './embeddings'
+        network_names = [i for i in config['networks'] if i in network_list]
+
+        # Generate dataloaders
+        standard_dl, adversarial_dl = adversarial_dataloading(real_dataset_path)
+
+        for network_name in network_names:
+            try:
+                model, processor, device = load_best_model_for_inference(network_name)
+                print(f"Successfully loaded the best model for {network_name}")
+                
+                
+                # Perform inference and save embeddings
+                embeddings_file = inference_and_save_embeddings(model, processor, device, standard_dl, adversarial_dl, network_name, output_dir)
+
+                # COmpute MSD between synthetic - real
+                if os.path.exists(embeddings_file):
+                    print(f"Processing {network_name}")
+                    stats = compute_distances_and_plot(embeddings_file, output_dir, methods=['euclidean', 'pearson', 'spearman'])
+                    print(f"Statistics for {network_name}:")
+                    for key, value in stats.items():
+                        print(f"  {key}: {value}")       
+
+            except Exception as e:
+                print(f"Error processing {network_name}: {str(e)}")
+
+                print(traceback.format_exc())
 if __name__ == "__main__":
     main()

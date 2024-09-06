@@ -2,27 +2,27 @@
 feature_extraction: false
 eval_only: false
 sing_image_eval: false
-realism_correlation: true
-
-
+realism_correlation: false
+privacy_benchmark: false
+adversarial_privacy_assesment: true
 # Paths to the real and synthetic datasets
 real_dataset_path: './data/real'
 synthetic_dataset_path: './data/synthetic/diffusion'
 
 # List of networks to use for feature extraction
 networks:
-  #- 'rad_inception'
-  #- 'resnet50'
+  - 'rad_inception'
+  - 'resnet50'
   #- 'rad_resnet50'
   #- 'inceptionresnet'
   #- 'rad_inceptionresnet'
   #- 'densenet121'
   #- 'rad_densenet'
-  - 'clip'
-  - 'rad_clip'
-  - 'rad_dino'
-  - 'dino'
-  - 'inception'
+  #- 'clip'
+  #- 'rad_clip'
+  #- 'rad_dino'
+  #- 'dino'
+  #- 'inception'
 
 metrics:
   - fid
@@ -53,14 +53,13 @@ jsonl_path:
 timestamp: '20240822_155631' #'20240821_151647' # for specific features previously computed, use with feature_extraction=false
 do_z_score: false
 # New parameters for privacy benchmark
-privacy_benchmark: true
 n_features: 128
-target_resolution: [512, 512]
+target_resolution: [224, 224]
 split_ratio: 0.8
 num_workers: 4
 pin_memory: true
 base_lr: 0.001
-n_epochs: 10
+n_epochs: 50
 temperature: 0.5
-save_model_interval: 5
+save_model_interval: 10
 multi_gpu: true

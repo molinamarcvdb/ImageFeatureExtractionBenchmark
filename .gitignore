@@ -11,3 +11,4 @@ pretrained/MUSIQ/saved_model.pb
 checkpoints/*
 wandb
 .mypy_cache
+*.h5

@@ -28,8 +28,20 @@ import inspect
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, BatchSampler
 import gc
 from transformers import CLIPConfig
+import matplotlib.pyplot as plt
+from PIL import Image
+from torch.utils.data import Dataset
+from torchvision import transforms
+import random
+import glob
+from tqdm import tqdm
+import h5py
+import traceback
+from scipy.spatial.distance import cdist
+from scipy.stats import spearmanr, kendalltau
 
 class SiameseNetwork(nn.Module):
+
     def __init__(self, backbone_model, backbone_type='torch', processor=None, n_features=128):
         super(SiameseNetwork, self).__init__()
         self.backbone = backbone_model
@@ -65,7 +77,7 @@ class SiameseNetwork(nn.Module):
 
             self.fc = nn.Linear(in_features, self.n_features)
             for param in self.backbone.parameters():
-                param.requires_grad = False
+                param.requires_grad = True
 
         elif self.backbone_type == 'keras':
             # Keras model handling remains the same
@@ -175,8 +187,8 @@ def initialize_model(network_name):
         backbone = load_and_remap_state_dict(backbone, 'densenet121.pth')
         backbone_type = 'torch'
     elif network_name.lower() == "clip":
-        backbone = CLIPModel.from_pretrained("openai/clip-vit-large-patch14", output_hidden_states=True)
-        processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        backbone = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", output_hidden_states=True)
+        processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
         backbone_type = 'huggingface'
     elif network_name.lower() == "rad_clip":
         backbone = CLIPModel.from_pretrained("flaviagiammarino/pubmed-clip-vit-base-patch32", output_hidden_states=True)
@@ -235,8 +247,10 @@ PREPROCESSING_TRANSFORMS = tio.Compose([
 ])
 
 TRAIN_TRANSFORMS = tio.Compose([
-    tio.RandomAffine(degrees=(-5, 5), scales=(0.9, 1.1), default_pad_value='minimum', p=0.5),
-    tio.RandomFlip(axes=(2), flip_probability=0.5)
+    tio.RandomAffine(degrees=(-15,15), scales=(0.85, 1.15), default_pad_value='minimum', p=0.5),
+    tio.RandomFlip(axes=(2), flip_probability=0.5),
+    tio.RandomBiasField(coefficients=0.5, order = 3, p=0.2),
+    tio.RandomGamma(log_gamma=(-0.3, 0.3), p=0.4)
 ])
 
 VAL_TRANSFORMS = None
@@ -380,28 +394,36 @@ def should_reduce_batch_size(exception: Exception) -> bool:
 def find_executable_batch_size(function: callable = None, starting_batch_size: int = 32):
     if function is None:
         return functools.partial(find_executable_batch_size, starting_batch_size=starting_batch_size)
+
     batch_size = starting_batch_size
+    has_run = False  # Track if the function has been run during the first epoch
+
     def decorator(*args, **kwargs):
-        nonlocal batch_size
-        clear_device_cache(garbage_collection=True)
-        params = list(inspect.signature(function).parameters.keys())
-        if len(params) < (len(args) + 1):
-            arg_str = ", ".join([f"{arg}={value}" for arg, value in zip(params[1:], args[1:])])
-            raise TypeError(
-                f"Batch size was passed into `{function.__name__}` as the first argument when called."
-                f"Remove this as the decorator already does so: `{function.__name__}({arg_str})`"
-            )
+        nonlocal batch_size, has_run
+
+        # If it's not the first epoch, skip batch size adjustment
+        if has_run:
+            return function(batch_size, *args, **kwargs)
+
+        # First epoch: run the batch size adjustment logic
         while True:
             if batch_size == 0:
                 raise RuntimeError("No executable batch size found, reached zero.")
+
             try:
-                return function(batch_size, *args, **kwargs)
+                # Call the function with the current batch size
+                result = function(batch_size, *args, **kwargs)
+                has_run = True  # Mark as run after first successful call
+                return result
+
             except Exception as e:
+                # Handle exception and reduce batch size if necessary
                 if should_reduce_batch_size(e):
                     clear_device_cache(garbage_collection=True)
                     batch_size //= 2
                 else:
                     raise
+
     return decorator
 
 
@@ -422,7 +444,7 @@ def setup_training(root_dir, network_name, **kwargs):
     defaults = {
         'n_features': 128,
         'batch_size': 32,
-        'target_resolution': (512, 512),
+        'target_resolution': (224, 224),
         'split_ratio': 0.8,
         'num_workers': 4,
         'pin_memory': True,
@@ -448,18 +470,20 @@ def setup_training(root_dir, network_name, **kwargs):
         print(network_name, e)
         raise ValueError(f'Error {e} with {network_name}')
 
+
+    # Select target reolution for eahc specific model 
+    if backbone_type == 'torch':
+        target_res = (224, 224)
+        if isinstance(backbone_model, models.Inception3):
+            target_res = (299, 299)
+    elif backbone_type == 'huggingface':
+        target_res = (224, 224)
+    
     if config['multi_gpu']:
         model = torch.nn.DataParallel(model)
    
     model.to(device)
     
-    # Select target reolution for eahc specific model 
-    if backbone_type == 'torch':
-        target_res = (224, 224)
-        if isinstance(backbone_model, model.Inception3):
-            target_res = (299, 299)
-    elif backbone_type == 'huggingface':
-        target_res = (224, 224)
     # Define preprocessing and transforms
     preprocessing_transforms = tio.Compose([
         tio.RescaleIntensity(out_min_max=(0, 1)),
@@ -543,7 +567,7 @@ def setup_training(root_dir, network_name, **kwargs):
             optimizer.zero_grad()
             Pos11 = batch['data'].to(device)
             Pos12 = batch['data_pos'].to(device)
-
+       
             # Forward pass
             PosEmb11 = model(Pos11, resnet_only=True)
             PosEmb12 = model(Pos12, resnet_only=True)
@@ -557,16 +581,16 @@ def setup_training(root_dir, network_name, **kwargs):
                 try:
                     PosEmb11 = PosEmb11.logits
                     PosEmb12 = PosEmb12.logits
-                except AttributeError:
+                except AttributeError as e:
                     # If it's neither a tensor nor has logits, print the type for debugging
                     print(f"Unexpected output type: {type(PosEmb11)}")
-                    raise 
-           
+                    raise AttributeError(f'{e}')           
             Labels  = torch.arange(PosEmb11.shape[0], device=device)
             LossPos1 = LossTr(torch.cat((PosEmb11, PosEmb12), dim=0), torch.cat((Labels, Labels), dim=0))
 
             LossPos1.backward()
             optimizer.step()
+            scheduler.step()
 
             epoch_loss += LossPos1.item()
             progress_bar.set_postfix({'loss': f'{LossPos1.item():.4f}'})
@@ -608,7 +632,26 @@ def setup_training(root_dir, network_name, **kwargs):
         scheduler.step()
 
         val_loss, pos_sim, neg_sim, neg_sim_aug = validate(model, val_loader, device, LossTr)
+
+        
         val_losses.append(val_loss)
+        
+        # Save model checkpoints
+        if (epoch + 1) % config['save_model_interval'] == 0 or epoch == 0:
+            save_path = os.path.join(ckpt_dir, f"model_epoch_{epoch}.pth")
+            torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), save_path)
+            #wandb.save(save_path)
+
+        # Save best model
+        print(val_loss)
+        print(val_losses)
+        print((epoch + 1 > 1) and (val_loss <= min(val_losses)))
+        if (epoch + 1 > 1) and (val_loss <= min(val_losses)):
+            best_path = os.path.join(ckpt_dir, "model_best.pth")
+            torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), best_path)
+            #wandb.save(best_path)
+
+        
         # Logging with wandb
         wandb.log({
             "epoch": epoch,
@@ -617,20 +660,9 @@ def setup_training(root_dir, network_name, **kwargs):
             "batch_size": train_loader.batch_sampler.batch_size,
             "positive_samples": wandb.Histogram(pos_sim),
             "negative_samples": wandb.Histogram(neg_sim),
-            "negative_samples_augmented": wandb.Histogram(neg_sim_aug)
+            "negative_samples_augmented": wandb.Histogram(neg_sim_aug),
+            "learning rate": optimizer.param_groups[0]['lr']
         })
-
-        # Save model checkpoints
-        if (epoch + 1) % config['save_model_interval'] == 0 or epoch == 0:
-            save_path = os.path.join(ckpt_dir, f"model_epoch_{epoch}.pth")
-            torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), save_path)
-            wandb.save(save_path)
-
-        # Save best model
-        if (epoch > 1) and (val_loss < min(val_losses[:-1])):
-            best_path = os.path.join(ckpt_dir, "model_best.pth")
-            torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), best_path)
-            wandb.save(best_path)
 
     wandb.finish()
     return train_loader, val_loader, device
@@ -654,89 +686,308 @@ def train_by_models(real_data_dir: str, network_names: list, **kwargs):
         )
         
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+def load_best_model_for_inference(network_name, checkpoints_dir='./checkpoints'):
+    # Initialize the model
+    backbone_model, backbone_type, processor = initialize_model(network_name)
+    model = SiameseNetwork(backbone_model, backbone_type, processor, n_features=128)
+
+    # Find the most recent checkpoint directory for this network
+    network_checkpoints = glob.glob(os.path.join(checkpoints_dir, f"*_{network_name}"))
+    if not network_checkpoints:
+        raise ValueError(f"No checkpoints found for {network_name}")
+    
+    latest_checkpoint_dir = max(network_checkpoints, key=os.path.getctime)
+
+    # Look for the best model in this directory
+    best_model_path = os.path.join(latest_checkpoint_dir, "model_best.pth")
+    
+    if not os.path.exists(best_model_path):
+        raise FileNotFoundError(f"Best model not found at {best_model_path}")
+
+    # Load the state dict
+    state_dict = torch.load(best_model_path, map_location='cpu')
+
+    # Load the state dict into the model
+    model.load_state_dict(state_dict)
+
+    # Set the model to evaluation mode
+    model.eval()
+
+    # Move the model to GPU if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+
+    return model, processor, device
+
+class ImageDataset(Dataset):
+    def __init__(self, data_path, transform=None):
+        self.data_path = data_path
+        self.image_paths = []
+        self.load_image_paths()
+        self.transform = transform
+
+    def load_image_paths(self):
+        for root, _, files in os.walk(self.data_path):
+            for file in files:
+                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+                    self.image_paths.append(os.path.join(root, file))
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path).convert('RGB')
+        if self.transform:
+            image = self.transform(image)
+        return image, img_path
+
+class AdversarialDataset(ImageDataset):
+    def __init__(self, data_path):
+        super().__init__(data_path)
+        self.transform = self.create_strong_augmentation()
+
+    def create_strong_augmentation(self):
+        return transforms.Compose([
+            transforms.Resize(224),
+            #transforms.RandomResizedCrop(224, scale=(0.6, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(30),
+            transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.5),
+            #transforms.RandomAffine(degrees=30, translate=(0.3, 0.3), scale=(0.5, 1.5), shear=30),
+            #transforms.GaussianBlur(kernel_size=(5, 9), sigma=(0.1, 2)),
+            #transforms.RandomAutocontrast(),
+            #transforms.RandomAdjustSharpness(sharpness_factor=2),
+            #transforms.RandomSolarize(threshold=128),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
+def adversarial_dataloading(real_dataset_path, batch_size=32, shuffle=True, num_workers=4):
+    # Standard dataset with minimal transformations
+    standard_transform = transforms.Compose([
+        transforms.Resize(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    standard_dataset = ImageDataset(real_dataset_path, transform=standard_transform)
+    standard_dataloader = torch.utils.data.DataLoader(
+        standard_dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers
+    )
+
+    # Adversarial dataset with strong augmentations
+    adversarial_dataset = AdversarialDataset(real_dataset_path)
+    adversarial_dataloader = torch.utils.data.DataLoader(
+        adversarial_dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers
+    )
+
+    return standard_dataloader, adversarial_dataloader
+
+def inference_and_save_embeddings(model, processor, device, standard_dl, adversarial_dl, network_name, output_dir):
+    model.eval()
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    def process_dataloader(dataloader, name):
+        embeddings = []
+        image_ids = []
+        
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc=f"Processing {name} data"):
+                try:
+                    # Check if batch is a list or a dictionary
+                    if isinstance(batch, list):
+                        images = batch[0].to(device)
+                        # Assuming image_ids are not available in this case
+                        current_image_ids = [f"{name}_{i}" for i in range(len(images))]
+                    elif isinstance(batch, dict):
+                        images = batch['data'].to(device)
+                        current_image_ids = batch['img_id']
+                    else:
+                        raise TypeError(f"Unexpected batch type: {type(batch)}")
+                    
+                    #if processor:
+                       # images = processor(images=images, return_tensors="pt")['pixel_values'].to(device)
+                    
+                    output = model(images, resnet_only=True)
+                    
+                    if not isinstance(output, torch.Tensor):
+                        output = output.logits if hasattr(output, 'logits') else output[0]
+                    
+                    embeddings.append(output.cpu().numpy())
+                    image_ids.extend(current_image_ids)
+                except Exception as e:
+                    print(f"Error processing batch in {name} dataloader: {str(e)}")
+                    print(f"Batch type: {type(batch)}")
+                    if isinstance(batch, list):
+                        print(f"Batch length: {len(batch)}")
+                        print(f"First element type: {type(batch[0])}")
+                        if isinstance(batch[0], torch.Tensor):
+                            print(f"First element shape: {batch[0].shape}")
+                    elif isinstance(batch, dict):
+                        print(f"Batch keys: {batch.keys()}")
+                        print(f"Batch shapes: {[batch[k].shape if isinstance(batch[k], torch.Tensor) else type(batch[k]) for k in batch.keys()]}")
+                    raise
+        
+        return np.vstack(embeddings), image_ids
+
+    try:
+        standard_embeddings, standard_ids = process_dataloader(standard_dl, "standard")
+        adversarial_embeddings, adversarial_ids = process_dataloader(adversarial_dl, "adversarial")
+
+        output_file = os.path.join(output_dir, f"{network_name}_embeddings.h5")
+        with h5py.File(output_file, 'w') as f:
+            f.create_dataset('standard/embeddings', data=standard_embeddings)
+            f.create_dataset('standard/image_ids', data=np.array(standard_ids, dtype=h5py.special_dtype(vlen=str)))
+            
+            f.create_dataset('adversarial/embeddings', data=adversarial_embeddings)
+            f.create_dataset('adversarial/image_ids', data=np.array(adversarial_ids, dtype=h5py.special_dtype(vlen=str)))
+
+        print(f"Embeddings saved to {output_file}")
+    except Exception as e:
+        print(f"Error processing {network_name}: {str(e)}")
+        print(traceback.format_exc())
+    
+    return output_file
+
+
+def compute_distances_and_plot(embeddings_file, output_dir, methods='euclidean'):
+    with h5py.File(embeddings_file, 'r') as f:
+        real_embeddings = f['standard/embeddings'][:]
+        synthetic_embeddings = f['adversarial/embeddings'][:]
+
+    if isinstance(methods, str):
+        methods = [methods]
+
+    results = {}
+    for method in methods:
+        if method in ['euclidean', 'sqeuclidean']:
+            real_real_distances = cdist(real_embeddings, real_embeddings, metric=method)
+            np.fill_diagonal(real_real_distances, np.inf)  # Exclude self-comparisons
+            synthetic_real_distances = cdist(synthetic_embeddings, real_embeddings, metric=method)
+
+            min_real_real_distances = np.min(real_real_distances, axis=1)
+            min_synthetic_real_distances = np.min(synthetic_real_distances, axis=1)
+
+            results[method] = {
+                'real_real': min_real_real_distances,
+                'synthetic_real': min_synthetic_real_distances
+            }
+
+        elif method in ['pearson', 'spearman', 'kendall']:
+            if method == 'pearson':
+                real_real_corr = np.corrcoef(real_embeddings)
+                synthetic_real_corr = np.corrcoef(synthetic_embeddings, real_embeddings)[:len(synthetic_embeddings), len(synthetic_embeddings):]
+            elif method == 'spearman':
+                real_real_corr, _ = spearmanr(real_embeddings, axis=1)
+                if np.isscalar(real_real_corr):
+                    real_real_corr = np.full((len(real_embeddings), len(real_embeddings)), real_real_corr)
+                synthetic_real_corr, _ = spearmanr(synthetic_embeddings, real_embeddings)
+                if np.isscalar(synthetic_real_corr):
+                    synthetic_real_corr = np.full((len(synthetic_embeddings), len(real_embeddings)), synthetic_real_corr)
+                else:
+                    synthetic_real_corr = synthetic_real_corr[:len(synthetic_embeddings), len(synthetic_embeddings):]
+            elif method == 'kendall':
+                # Kendall's tau is computationally expensive for large matrices, so we'll use a sample if the dataset is large
+                if len(real_embeddings) > 1000:
+                    sample_size = 1000
+                    sample_indices = np.random.choice(len(real_embeddings), sample_size, replace=False)
+                    real_sample = real_embeddings[sample_indices]
+                    synthetic_sample = synthetic_embeddings[np.random.choice(len(synthetic_embeddings), sample_size, replace=False)]
+                    real_real_corr, _ = kendalltau(real_sample, real_sample)
+                    synthetic_real_corr, _ = kendalltau(synthetic_sample, real_sample)
+                else:
+                    real_real_corr, _ = kendalltau(real_embeddings, real_embeddings)
+                    synthetic_real_corr, _ = kendalltau(synthetic_embeddings, real_embeddings)
+
+                if np.isscalar(real_real_corr):
+                    real_real_corr = np.full((len(real_embeddings), len(real_embeddings)), real_real_corr)
+                if np.isscalar(synthetic_real_corr):
+                    synthetic_real_corr = np.full((len(synthetic_embeddings), len(real_embeddings)), synthetic_real_corr)
+
+            np.fill_diagonal(real_real_corr, np.nan)  # Exclude self-correlations
+
+            results[method] = {
+                'real_real': real_real_corr[~np.isnan(real_real_corr)],
+                'synthetic_real': synthetic_real_corr.flatten()
+            }
+
+    # Plotting
+    n_methods = len(methods)
+    fig, axs = plt.subplots(n_methods, 1, figsize=(10, 8*n_methods))
+    if n_methods == 1:
+        axs = [axs]
+
+    for ax, (method, data) in zip(axs, results.items()):
+        for key in ['real_real', 'synthetic_real']:
+            valid_data = data[key][~np.isnan(data[key]) & ~np.isinf(data[key])]
+            if len(valid_data) > 0:
+                ax.hist(valid_data, bins=50, alpha=0.5, label=key.replace('_', '-').title(), density=True)
+            else:
+                print(f"Warning: No valid data for {key} in {method}")
+        
+        ax.set_xlabel(f'{method.capitalize()} {"Distance" if method in ["euclidean", "sqeuclidean"] else "Correlation"}')
+        ax.set_ylabel('Density')
+        ax.set_title(f'Distribution of {method.capitalize()} {"Distances" if method in ["euclidean", "sqeuclidean"] else "Correlations"}')
+        ax.legend()
+
+    plt.tight_layout()
+    plot_file = embeddings_file.replace('.h5', f'_{"-".join(methods)}_distribution.png')
+    plt.savefig(plot_file)
+    plt.close()
+
+    print(f"Distribution plot saved to {plot_file}")
+
+    # Compute and return statistics
+    stats = {}
+    for method, data in results.items():
+        for key in ['real_real', 'synthetic_real']:
+            valid_data = data[key][~np.isnan(data[key]) & ~np.isinf(data[key])]
+            if len(valid_data) > 0:
+                stats[f'{method}_{key}_mean'] = np.mean(valid_data)
+                stats[f'{method}_{key}_median'] = np.median(valid_data)
+            else:
+                stats[f'{method}_{key}_mean'] = np.nan
+                stats[f'{method}_{key}_median'] = np.nan
+                print(f"Warning: No valid data for {key} in {method}")
+
+    return stats
+
+def visualize_augmentations(dataloader, num_images=6, num_augmentations=5):
+    # Get a batch of images
+    images, paths = next(iter(dataloader))
+    
+    # Create a figure with subplots
+    fig, axes = plt.subplots(num_images, num_augmentations + 1, figsize=(20, 4 * num_images))
+    fig.suptitle("Original vs Augmented Images", fontsize=16)
+
+    # Inverse normalization function
+    inv_normalize = transforms.Normalize(
+        mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225],
+        std=[1/0.229, 1/0.224, 1/0.225]
+    )
+
+    for i in range(num_images):
+        # Display original image
+        original_img = Image.open(paths[i]).convert('RGB')
+        axes[i, 0].imshow(original_img)
+        axes[i, 0].set_title("Original")
+        axes[i, 0].axis('off')
+
+        # Display augmented images
+        for j in range(1, num_augmentations + 1):
+            aug_img = dataloader.dataset.transform(original_img)
+            aug_img = inv_normalize(aug_img)
+            aug_img = torch.clamp(aug_img, 0, 1)
+            axes[i, j].imshow(aug_img.permute(1, 2, 0))
+            axes[i, j].set_title(f"Augmented {j}")
+            axes[i, j].axis('off')
+
+    plt.tight_layout()
+    plt.savefig('data/image_aug.png')
