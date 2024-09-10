@@ -3,15 +3,15 @@ feature_extraction: false
 eval_only: false
 sing_image_eval: false
 realism_correlation: false
-privacy_benchmark: false
+privacy_benchmark: true
 adversarial_privacy_assesment: true
 # Paths to the real and synthetic datasets
-real_dataset_path: './data/real'
+real_dataset_path: '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/output_images_512_all'
 synthetic_dataset_path: './data/synthetic/diffusion'
 
 # List of networks to use for feature extraction
 networks:
-  - 'rad_inception'
+  #- 'rad_inception'
   - 'resnet50'
   #- 'rad_resnet50'
   #- 'inceptionresnet'
@@ -35,8 +35,7 @@ metrics:
   - mmd
 
 # Batch size for feature extraction
-batch_size: 64
-
+batch_size: 100
 # Number of sets to divide each dataset into
 num_sets: 10
 
@@ -53,13 +52,19 @@ jsonl_path:
 timestamp: '20240822_155631' #'20240821_151647' # for specific features previously computed, use with feature_extraction=false
 do_z_score: false
 # New parameters for privacy benchmark
-n_features: 128
+n_features: 768
 target_resolution: [224, 224]
 split_ratio: 0.8
 num_workers: 4
 pin_memory: true
-base_lr: 0.001
-n_epochs: 50
+base_lr: 0.01
+n_epochs: 10
 temperature: 0.5
 save_model_interval: 10
 multi_gpu: true
+loss_type: 'triplet'  # New parameter to choose between 'ntxent' and 'margin'
+margin: 1.0
+swap: false,
+smooth_loss: false,
+triplets_per_anchor: 'all'
+unfreeze_epoch: 0 

@@ -10,7 +10,7 @@ from metrics import calculate_metrics
 from utils import link_azure_local, get_sets_content, get_realism_set_dict, realism_corr_net
 from single_image_metrics import main_single_metric_eval, compute_ground_truth_correlations
 from realism import realism_handling
-from privacy_benchmark import setup_training, adversarial_dataloading, visualize_augmentations, load_best_model_for_inference, inference_and_save_embeddings, compute_distances_and_plot   
+from privacy_benchmark import setup_training, create_dataloaders, visualize_augmentations, load_best_model_for_inference, inference_and_save_embeddings, compute_distances_and_plot   
 from tqdm import tqdm
 import traceback
 
@@ -205,7 +205,7 @@ def main():
         
         # Function to obtian only realism scores and file names and output z_score normalization
         mean_realism_z_scored = realism_handling(grouped_data)
-        print(mean_realism_z_scored.columns)
+   
         # Record of each image linking it with the local_path
         # All images sets should contain the same images only iterating for first network
         net_sets_dict = get_sets_content(timestamp)
@@ -213,7 +213,6 @@ def main():
         dict_sets_realism = get_realism_set_dict(grouped_data, net_sets_dict, mean_realism_z_scored, do_z_score)
         # Get realism dictioanry as qualitative metric in dict format
         #dict_sets_realism = get_realism_set_dict(grouped_data, net_sets_dict)
-        print(dict_sets_realism)
         #dict_sets_realism = {
         #    1: [72, 50, 50, 22, 50, 22, 50, 22, 50, 22, 50, 22, 50, 23], 
         #    2: [50, 79, 67, 30, 50, 50, 22, 50, 22, 50, 50, 50, 22,  23], 
@@ -247,7 +246,13 @@ def main():
             'n_epochs': config.get('n_epochs', 10),
             'temperature': config.get('temperature', 0.5),
             'save_model_interval': config.get('save_model_interval', 5),
-            'multi_gpu': config.get('multi_gpu', False)
+            'multi_gpu': config.get('multi_gpu', False),
+            'loss_type': config.get('loss_type', 'triplet'),
+            'margin': config.get('margin', 1.0),
+            'swap': config.get('swap',  False),
+            'smooth_loss': config.get('smooth_loss', False),
+            'triplets_per_anchor': 'all',
+            'unfreeze_epoch': config.get('unfreeze_epoch', 10)
         }
 
         for network_name in config['networks']:
@@ -261,33 +266,27 @@ def main():
     if config.get('adversarial_privacy_assesment', False):
 
         output_dir = './embeddings'
-
-        #visualize_augmentations(adversarial_dloutput_dir = './embeddings'
         network_names = [i for i in config['networks'] if i in network_list]
-
-        # Generate dataloaders
-        standard_dl, adversarial_dl = adversarial_dataloading(real_dataset_path)
 
         for network_name in network_names:
             try:
-                model, processor, device = load_best_model_for_inference(network_name)
-                print(f"Successfully loaded the best model for {network_name}")
-                
-                
-                # Perform inference and save embeddings
-                embeddings_file = inference_and_save_embeddings(model, processor, device, standard_dl, adversarial_dl, network_name, output_dir)
+                model, processor, device, train_standard_loader, train_adversarial_loader, val_standard_loader = load_best_model_for_inference(network_name, config)
 
-                # COmpute MSD between synthetic - real
+                # Perform inference and save embeddings
+                embeddings_file = inference_and_save_embeddings(model, processor, device, train_standard_loader, train_adversarial_loader, val_standard_loader, network_name, output_dir)
+
+                # Compute MSD between train_standard and val_standard (baseline)
+                # and between train_adversarial and train_standard
                 if os.path.exists(embeddings_file):
                     print(f"Processing {network_name}")
                     stats = compute_distances_and_plot(embeddings_file, output_dir, methods=['euclidean', 'pearson', 'spearman'])
                     print(f"Statistics for {network_name}:")
                     for key, value in stats.items():
-                        print(f"  {key}: {value}")       
+                        print(f"  {key}: {value}")
 
             except Exception as e:
                 print(f"Error processing {network_name}: {str(e)}")
-
                 print(traceback.format_exc())
+
 if __name__ == "__main__":
     main()
