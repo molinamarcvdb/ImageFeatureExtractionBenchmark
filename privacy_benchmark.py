@@ -259,6 +259,7 @@ from torchvision.io import read_image
 import torchio as tio
 from pytorch_metric_learning.distances import  CosineSimilarity
 from pytorch_metric_learning.losses import NTXentLoss
+import torch.nn.functional as F
 
 class ContrastiveDataset(torch.utils.data.Dataset):
     def __init__(self, file_paths, target_resolution, transforms, num_channels=3):
@@ -312,7 +313,6 @@ class ContrastiveDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         img = self.process_image(self.paths[index])
         img_pos = self.process_image(self.paths[index], aug = True)  # Same image, different augmentation
-        
         # Get a negative sample
         index_neg = np.random.choice(np.delete(np.arange(len(self.paths)), index))
         img_neg = self.process_image(self.paths[index_neg])
@@ -852,6 +852,9 @@ def load_best_model_for_inference(network_name, config, checkpoints_dir='./check
     model.eval()
 
     # Move the model to GPU if available
+    if config['multi_gpu']:
+        model = torch.nn.DataParallel(model)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
@@ -873,110 +876,200 @@ def load_best_model_for_inference(network_name, config, checkpoints_dir='./check
         raise FileNotFoundError(f"JSON file not found: {json_path}")
 
     train_paths, val_paths = load_image_paths(json_path)
-    train_standard_loader, train_adversarial_loader, val_standard_loader = create_dataloaders(
-        train_paths, val_paths, batch_size, num_workers
-    )
+    train_standard_loader, val_loader = create_dataloaders(
+        train_paths, val_paths, config)
 
-    return model, processor, device, train_standard_loader, train_adversarial_loader, val_standard_loader
+    return model, processor, device, train_standard_loader, val_loader
 
 class ImageDataset(Dataset):
-    def __init__(self, image_paths, transform=None):
+    def __init__(self, image_paths, target_resolution: int = 224, transform=None):
         self.image_paths = image_paths
+        self.target_resolution = target_resolution
         self.transform = transform
-
+        self.resolution_transform = tio.Resize(target_resolution)
+        self.mandatory_aug = tio.Compose([
+                tio.RescaleIntensity(out_min_max=(0, 1)),
+            ])
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
-        image = Image.open(img_path).convert('RGB')
+        img = tio.ScalarImage(img_path)
+        
+        # Print original shape for debugging
+        #print(f"Original shape: {img.shape}")
+        
+        # Get the data as a PyTorch tensor
+        img_data = img.data
+        
+        # Ensure the tensor is 4D (batch, channels, height, width)
+        if len(img_data.shape) == 2:  # (height, width)
+            img_data = img_data.unsqueeze(0).unsqueeze(0)
+        elif len(img_data.shape) == 3:  # (channels, height, width)
+            img_data = img_data.unsqueeze(0)
+        elif len(img_data.shape) == 4:  # (batch, channels, height, width)
+            pass  # Already in the correct format
+        else:
+            raise ValueError(f"Unexpected tensor shape: {img_data.shape}") 
+
+        # Print shape after dimension adjustment
+        #print(f"Shape after adjustment: {img_data.shape}")
+        
+        # Create a new ScalarImage with the adjusted data
+        img = tio.ScalarImage(tensor=img_data)
+        
+        # Apply resolution transform
+        img_data = self.resolution_transform(img)
+
+        # Print shape after resizing
+        #print(f"Shape after resizing: {img_data.shape}")
+        
         if self.transform:
-            image = self.transform(image)
-        return image, img_path
+            print('Applying transform')
+            img = self.transform(img_data)
+            print(f'SHpare after transform {img}')
+        else:
+            img = self.mandatory_aug(img)
+            print(img.shape)
+
+        return img, img_path
 
 class AdversarialDataset(ImageDataset):
-    def __init__(self, image_paths):
+    def __init__(self, image_paths, target_resolution):
         super().__init__(image_paths)
         self.transform = self.create_strong_augmentation()
+        self.target_resolution = target_resolution
 
     def create_strong_augmentation(self):
-        return transforms.Compose([
-            transforms.Resize(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(30),
-            transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.5),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        return tio.Compose([
+            tio.RescaleIntensity(out_min_max=(0, 1)),
+            Custom2DRotation(degrees=20, p=0.7),
+            tio.RandomAffine(
+                degrees=0,
+                scales=(0.8, 1.2),
+                default_pad_value='minimum',
+                p=0.5
+            ),
+            tio.RandomFlip(axes=(1, 2), flip_probability=0.5),  # Changed from (0, 1) to (1, 2)
+            tio.RandomBiasField(
+                coefficients=0.3,
+                order=3,
+                p=0.4
+            ),
+            tio.RandomGamma(
+                log_gamma=(-0.1, 0.1),
+                p=0.4
+            ),
+            tio.RandomNoise(std=(0, 0.05), p=0.3),
+            tio.RandomBlur(std=(0, 1), p=0.2),
+            tio.RandomMotion(degrees=5, translation=5, p=0.2),
         ])
-
+        
 def load_image_paths(json_path):
     with open(json_path, 'r') as f:
         data = json.load(f)
     return data['train_paths'], data['val_paths']
 
-def create_dataloaders(train_paths, val_paths, batch_size=32, num_workers=4):
-    standard_transform = transforms.Compose([
-        transforms.Resize(224),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+def create_dataloaders(train_paths, val_paths, config):
+    MANDATORY_TRANSFORMS = tio.Compose([
+        tio.RescaleIntensity(out_min_max=(0, 1)),
     ])
 
-    # Standard training dataloader
-    train_standard_dataset = ImageDataset(train_paths, transform=standard_transform)
-    train_standard_loader = DataLoader(
-        train_standard_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers
+    AUGMENTATION_TRANSFORMS = tio.Compose([
+        Custom2DRotation(degrees=20, p=0.7),
+        tio.RandomAffine(
+            degrees=(-0, 0),  # Reduced rotation range
+            scales=(0.8, 1.2),  # Reduced scaling range
+            default_pad_value='minimum',
+            p=0.5
+        ),
+        tio.RandomFlip(axes=(2), flip_probability=0.5),
+        tio.RandomFlip(axes=(1), flip_probability=0.5),
+        tio.RandomBiasField(
+            coefficients=0.3,  # Reduced coefficient for less intense bias field
+            order=3,
+            p=0.4
+        ),
+        tio.RandomGamma(
+            log_gamma=(-0.1, 0.1),  # Reduced range for less intense gamma correction
+            p=0.4
+        ),
+        tio.RandomNoise(std=(0, 0.05), p=0.3),  # Added some noise for texture
+        tio.RandomBlur(std=(0, 1), p=0.2),  # Added slight blur for realism
+        tio.RandomMotion(degrees=5, translation=5, p=0.2),
+    ])
+
+    # Combine mandatory and augmentation transforms for training
+    TRAIN_TRANSFORMS = tio.Compose([
+        MANDATORY_TRANSFORMS,
+        AUGMENTATION_TRANSFORMS
+    ])
+
+    # Validation only uses mandatory transforms
+    VAL_TRANSFORMS = MANDATORY_TRANSFORMS
+
+    # Ensure target_res is 3D
+    target_res = config['target_resolution']
+
+    if len(target_res) == 2:
+        target_res = (*target_res, 1)
+    
+    num_channels = 3    # Create separate datasets for train and validation
+
+    train_dataset = ContrastiveDataset(
+        file_paths=train_paths,
+        target_resolution=target_res,
+        transforms=TRAIN_TRANSFORMS,
+        num_channels=num_channels
     )
 
-    # Adversarial training dataloader
-    train_adversarial_dataset = AdversarialDataset(train_paths)
-    train_adversarial_loader = DataLoader(
-        train_adversarial_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers
+    val_dataset = ContrastiveDataset(
+        file_paths=val_paths,
+        target_resolution=target_res,
+        transforms=VAL_TRANSFORMS,
+        num_channels=num_channels
     )
 
-    # Standard validation dataloader
-    val_standard_dataset = ImageDataset(val_paths, transform=standard_transform)
-    val_standard_loader = DataLoader(
-        val_standard_dataset,
-        batch_size=batch_size,
+    # Create DataLoaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config['inference_bs'],
+        shuffle=True,
+        num_workers=config['num_workers'],
+        pin_memory=config['pin_memory'],
+        persistent_workers=True
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config['inference_bs'],
         shuffle=False,
-        num_workers=num_workers
+        num_workers=config['num_workers'],
+        pin_memory=config['pin_memory'],
+        persistent_workers=True
     )
 
-    return train_standard_loader, train_adversarial_loader, val_standard_loader
+    return train_loader, val_loader
 
-def inference_and_save_embeddings(model, processor, device, train_standard_loader, train_adversarial_loader, val_standard_loader, network_name, output_dir):
+def inference_and_save_embeddings(model, processor, device, train_standard_loader, val_standard_loader, network_name, output_dir):
     model.eval()
     os.makedirs(output_dir, exist_ok=True)
 
-    def process_dataloader(dataloader, name):
+    def process_dataloader(dataloader, name, model, device, adversarial=False):
         embeddings = []
         image_ids = []
 
         with torch.no_grad():
             for batch in tqdm(dataloader, desc=f"Processing {name} data"):
                 try:
-                    if isinstance(batch, (tuple, list)):
-                        if len(batch) == 2:
-                            images, paths = batch
-                        elif len(batch) == 1:
-                            images = batch[0]
-                            paths = [f"{name}_{i}" for i in range(len(images))]
-                        else:
-                            raise ValueError(f"Unexpected batch length: {len(batch)}")
-                    elif isinstance(batch, dict):
+                    if not adversarial:
                         images = batch['data']
-                        paths = batch.get('img_id', [f"{name}_{i}" for i in range(len(images))])
                     else:
-                        raise TypeError(f"Unexpected batch type: {type(batch)}")
-
+                        images = batch['data_pos']
+                    
                     images = images.to(device)
-                    current_image_ids = [os.path.basename(str(path)) for path in paths]
+                    current_image_ids = batch['img_id']
 
                     output = model(images, resnet_only=True)
 
@@ -988,15 +1081,20 @@ def inference_and_save_embeddings(model, processor, device, train_standard_loade
                 except Exception as e:
                     print(f"Error processing batch in {name} dataloader: {str(e)}")
                     print(f"Batch type: {type(batch)}")
-                    print(f"Batch content: {batch}")
+                    if isinstance(images, torch.Tensor):
+                        print(f"Images shape: {images.shape}")
                     raise
 
         return np.vstack(embeddings), image_ids
-
     try:
-        train_standard_embeddings, train_standard_ids = process_dataloader(train_standard_loader, "train_standard")
-        train_adversarial_embeddings, train_adversarial_ids = process_dataloader(train_adversarial_loader, "train_adversarial")
-        val_standard_embeddings, val_standard_ids = process_dataloader(val_standard_loader, "val_standard")
+        print('Proccessing standard')
+        train_standard_embeddings, train_standard_ids = process_dataloader(train_standard_loader, "train_standard", model, device)
+        print()
+        print('Processing adversarial')
+        train_adversarial_embeddings, train_adversarial_ids = process_dataloader(train_standard_loader, "train_adversarial", model, device, adversarial = True)
+        print()
+        print('Processing val')
+        val_standard_embeddings, val_standard_ids = process_dataloader(val_standard_loader, "val_standard", model, device)
 
         output_file = os.path.join(output_dir, f"{network_name}_embeddings.h5")
         with h5py.File(output_file, 'w') as f:
@@ -1237,7 +1335,7 @@ def visualize_augmentations_contrastive(dataloader, num_images=4, num_augmentati
 
 
 def rotate_2d(x: torch.Tensor, angle: float) -> torch.Tensor:
-    """Apply 2D rotation to a 3D tensor (1, H, W)."""
+    """Apply 2D rotation to a 3D tensor (C, H, W)."""
     rad = torch.deg2rad(torch.tensor(angle))
     cos, sin = torch.cos(rad), torch.sin(rad)
     rotation_matrix = torch.tensor([[cos, -sin, 0],
@@ -1253,7 +1351,7 @@ class Custom2DRotation(tio.transforms.Transform):
     def apply_transform(self, subject):
         for image in subject.get_images(intensity_only=True):
             angle = torch.randint(-self.degrees, self.degrees + 1, (1,)).item()
-            image_data = image.data[0]  # Assume (1, H, W) format
+            image_data = image.data[0]  # (C, H, W) format
             rotated_data = rotate_2d(image_data, angle)
-            image.set_data(rotated_data.unsqueeze(0))  # Back to (1, H, W)
+            image.set_data(rotated_data.unsqueeze(0))  # Back to (1, C, H, W)
         return subject

@@ -12,6 +12,10 @@ import tensorflow as tf
 import tensorflow_hub as hub
 from huggingface_hub import hf_hub_download
 
+def load_jsonl(file_path):
+    with open(file_path, 'r') as file:
+        for line in file:
+            yield json.loads(line)
 # Link azure to local path and group answers
 def link_azure_local(jsonl_paths):
     """
@@ -25,10 +29,6 @@ def link_azure_local(jsonl_paths):
     """
 
     # Function to read JSONL file
-    def load_jsonl(file_path):
-        with open(file_path, 'r') as file:
-            for line in file:
-                yield json.loads(line)
 
     # Define path mappings
     dict_map = {
@@ -98,7 +98,7 @@ def get_sets_content(timestamp):
             actual_set = i+1
             list_files_set = np.load(os.path.join(case_dir, network, 'synthetic', file))
             net_sets_dict[actual_set] = list(list_files_set)
-        break
+        break #We jsut need to iterate once as all networks have the same data split
     
     return net_sets_dict
 def get_realism_set_dict(grouped_data, net_sets_dict, mean_realism_z_scored, do_z_score):
@@ -110,7 +110,7 @@ def get_realism_set_dict(grouped_data, net_sets_dict, mean_realism_z_scored, do_
       If it's a list, it means multiple JSONL files were provided.
     - net_sets_dict (dict): Dictionary where keys are set indices and values are lists of local paths.
     - mean_realism_z_scored (pd.DataFrame): DataFrame with filenames as index, containing Realism Score, Z-Score, and Averaged Z-Score.
-    - do_z_score (bool): Determines whether to use the Z-Score or the Averaged Z-Score.
+    - do_z_score (bool): Determines whether to use the Averaged Realism Score  or the Averaged Z-Score.
 
     Returns:
     - dict: A dictionary where keys are set indices and values are lists of the selected realism score.

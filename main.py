@@ -222,9 +222,11 @@ def main():
         #    6: [4, 78, 23, 45, 67, 50, 50, 22, 50, 22, 1, 50, 1, 50 , 23], 
         #    7: [4, 78, 23, 25, 67, 50, 50, 22, 50, 22, 1, 50, 1, 50 , 23], 
         #    8: [4, 78, 23, 45, 67, 50, 50, 22, 40, 22, 1, 50, 1, 50 , 23], 
-        #    9: [4, 78, 23, 45, 67, 50, 50, 22, 50, 22, 90, 50, 1, 50 , 23], 
+        #    9: [4, 78, 23, 45, 67, 50, 50, 22,         50, 22, 90, 50, 1, 50 , 23], 
         #    10: [4, 78, 23, 45, 67, 10, 50, 22, 50, 22, 1, 50, 1, 100 , 23]
         #}
+
+        print(dict_sets_realism)
         #Set based correlationa analyses of distribution-based metrics
         realism_corr_net(dict_sets_realism, metrics, timestamp)
 
@@ -270,10 +272,10 @@ def main():
 
         for network_name in network_names:
             try:
-                model, processor, device, train_standard_loader, train_adversarial_loader, val_standard_loader = load_best_model_for_inference(network_name, config)
+                model, processor, device, train_standard_loader, val_loader = load_best_model_for_inference(network_name, config)
 
                 # Perform inference and save embeddings
-                embeddings_file = inference_and_save_embeddings(model, processor, device, train_standard_loader, train_adversarial_loader, val_standard_loader, network_name, output_dir)
+                embeddings_file = inference_and_save_embeddings(model, processor, device, train_standard_loader,  val_loader, network_name, output_dir)
 
                 # Compute MSD between train_standard and val_standard (baseline)
                 # and between train_adversarial and train_standard

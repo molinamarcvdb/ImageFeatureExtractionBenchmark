@@ -32,7 +32,7 @@ def realism_handling(data):
 
         return realism_scores
 
-    # Handle multiple JSONL files (list of dicts)
+    # Handle multiple JSONL files (list of dict of dicts)
     if isinstance(data, list):
         combined_realism_scores = {}
 
@@ -85,4 +85,4 @@ if __name__ == "__main__":
 
     df = realism_handling(data)
     print(df)
-
+    print(df.columns)
