@@ -876,10 +876,11 @@ def load_best_model_for_inference(network_name, config, checkpoints_dir='./check
         raise FileNotFoundError(f"JSON file not found: {json_path}")
 
     train_paths, val_paths = load_image_paths(json_path)
-    train_standard_loader, val_loader = create_dataloaders(
-        train_paths, val_paths, config)
+    synthetic_paths = [os.path.join(config['synthetic_dataset_path'], file) for file in os.listdir(config['synthetic_dataset_path']) if file.endswith(('.jpg', '.jpeg', '.png'))]
+    train_standard_loader, val_loader, synth_loader = create_dataloaders(
+        train_paths, val_paths, synthetic_paths, config)
 
-    return model, processor, device, train_standard_loader, val_loader
+    return model, processor, device, train_standard_loader, val_loader, synth_loader
 
 class ImageDataset(Dataset):
     def __init__(self, image_paths, target_resolution: int = 224, transform=None):
@@ -971,7 +972,7 @@ def load_image_paths(json_path):
         data = json.load(f)
     return data['train_paths'], data['val_paths']
 
-def create_dataloaders(train_paths, val_paths, config):
+def create_dataloaders(train_paths, val_paths, synthetic_paths, config):
     MANDATORY_TRANSFORMS = tio.Compose([
         tio.RescaleIntensity(out_min_max=(0, 1)),
     ])
@@ -1031,6 +1032,13 @@ def create_dataloaders(train_paths, val_paths, config):
         num_channels=num_channels
     )
 
+    synth_dataset = ContrastiveDataset(
+            file_paths = synthetic_paths,
+            target_resolution=target_res,
+            transforms=MANDATORY_TRANSFORMS,
+            num_channels=num_channels
+            )
+
     # Create DataLoaders
     train_loader = DataLoader(
         train_dataset,
@@ -1050,9 +1058,19 @@ def create_dataloaders(train_paths, val_paths, config):
         persistent_workers=True
     )
 
-    return train_loader, val_loader
+    synth_loader = DataLoader(
+        synth_dataset,
+        batch_size=config['inference_bs'],
+        shuffle=False,
+        num_workers=config['num_workers'],
+        pin_memory=config['pin_memory'],
+        persistent_workers=True
 
-def inference_and_save_embeddings(model, processor, device, train_standard_loader, val_standard_loader, network_name, output_dir):
+        )
+
+    return train_loader, val_loader, synth_loader
+
+def inference_and_save_embeddings(model, processor, device, train_standard_loader, val_standard_loader, synth_loader, network_name, output_dir):
     model.eval()
     os.makedirs(output_dir, exist_ok=True)
 
@@ -1095,6 +1113,9 @@ def inference_and_save_embeddings(model, processor, device, train_standard_loade
         print()
         print('Processing val')
         val_standard_embeddings, val_standard_ids = process_dataloader(val_standard_loader, "val_standard", model, device)
+        print()
+        print('Processing synthetic')
+        synth_standard_embeddings, synth_standard_ids = process_dataloader(synth_loader, "synth_standard", model, device)
 
         output_file = os.path.join(output_dir, f"{network_name}_embeddings.h5")
         with h5py.File(output_file, 'w') as f:
@@ -1106,6 +1127,9 @@ def inference_and_save_embeddings(model, processor, device, train_standard_loade
 
             f.create_dataset('val_standard/embeddings', data=val_standard_embeddings)
             f.create_dataset('val_standard/image_ids', data=np.array(val_standard_ids, dtype=h5py.special_dtype(vlen=str)))
+
+            f.create_dataset('synth_standard/embeddings', data=synth_standard_embeddings)
+            f.create_dataset('synth_standard/image_ids', data=np.array(synth_standard_ids, dtype=h5py.special_dtype(vlen=str)))
 
         print(f"Embeddings saved to {output_file}")
     except Exception as e:
@@ -1137,14 +1161,16 @@ def compute_distances_and_plot(embeddings_file, output_dir, methods='euclidean')
         train_standard_embeddings = f['train_standard/embeddings'][:]
         train_adversarial_embeddings = f['train_adversarial/embeddings'][:]
         val_standard_embeddings = f['val_standard/embeddings'][:]
-    
+        synth_standard_embeddings = f['synth_standard/embeddings'][:]
+
     print(f"Shapes: train_standard={train_standard_embeddings.shape}, "
           f"train_adversarial={train_adversarial_embeddings.shape}, "
-          f"val_standard={val_standard_embeddings.shape}")
+          f"val_standard={val_standard_embeddings.shape}, "
+          f"synth_standard={synth_standard_embeddings.shape}")
 
     if isinstance(methods, str):
         methods = [methods]
-    
+
     print(f"Computing distances/correlations for methods: {methods}")
 
     results = {}
@@ -1154,68 +1180,82 @@ def compute_distances_and_plot(embeddings_file, output_dir, methods='euclidean')
             print(f"Computing {method} distances")
             train_val_distances = cdist(train_standard_embeddings, val_standard_embeddings, metric=method)
             adversarial_train_distances = cdist(train_adversarial_embeddings, train_standard_embeddings, metric=method)
+            synth_train_distances = cdist(synth_standard_embeddings, train_standard_embeddings, metric=method)
 
             min_train_val_distances = np.min(train_val_distances, axis=1)
             min_adversarial_train_distances = np.min(adversarial_train_distances, axis=1)
+            min_synth_train_distances = np.min(synth_train_distances, axis=1)
 
             print(f"Distance shapes: train_val={min_train_val_distances.shape}, "
-                  f"adversarial_train={min_adversarial_train_distances.shape}")
+                  f"adversarial_train={min_adversarial_train_distances.shape}, "
+                  f"synth_train={min_synth_train_distances.shape}")
 
             results[method] = {
                 'train_val': min_train_val_distances,
-                'adversarial_train': min_adversarial_train_distances
+                'adversarial_train': min_adversarial_train_distances,
+                'synth_train': min_synth_train_distances
             }
 
         elif method in ['pearson', 'spearman']:
             print(f"Computing {method} correlation")
-            
+
             if method == 'pearson':
                 train_val_corr = compute_pearson_correlation(train_standard_embeddings, val_standard_embeddings)
                 adversarial_train_corr = compute_pearson_correlation(train_adversarial_embeddings, train_standard_embeddings)
+                synth_train_corr = compute_pearson_correlation(synth_standard_embeddings, train_standard_embeddings)
             elif method == 'spearman':
                 train_val_corr = compute_spearman_correlation(train_standard_embeddings, val_standard_embeddings)
                 adversarial_train_corr = compute_spearman_correlation(train_adversarial_embeddings, train_standard_embeddings)
+                synth_train_corr = compute_spearman_correlation(synth_standard_embeddings, train_standard_embeddings)
 
             print(f"Correlation shapes: train_val={train_val_corr.shape}, "
-                  f"adversarial_train={adversarial_train_corr.shape}")
+                  f"adversarial_train={adversarial_train_corr.shape}, "
+                  f"synth_train={synth_train_corr.shape}")
 
             results[method] = {
                 'train_val': train_val_corr,
-                'adversarial_train': adversarial_train_corr
+                'adversarial_train': adversarial_train_corr,
+                'synth_train': synth_train_corr
             }
 
     print("\nPlotting results")
     n_methods = len(methods)
-    fig, axs = plt.subplots(n_methods, 1, figsize=(10, 8*n_methods))
+
+    fig, axs = plt.subplots(n_methods, 1, figsize=(12, 10*n_methods), dpi=300)
     if n_methods == 1:
         axs = [axs]
 
     for ax, (method, data) in zip(axs, results.items()):
         print(f"Plotting for method: {method}")
-        for key in ['train_val', 'adversarial_train']:
+        for key in ['train_val', 'adversarial_train', 'synth_train']:
             valid_data = data[key][~np.isnan(data[key]) & ~np.isinf(data[key])]
             print(f"{key}: {len(valid_data)} valid data points")
             if len(valid_data) > 0:
-                ax.hist(valid_data, bins=50, alpha=0.5, label=key.replace('_', '-').title(), density=True)
+                sns.histplot(valid_data, bins=80, kde=True, stat="density", alpha=0.3, label=key.replace('_', '-').title(), ax=ax)
+                sns.kdeplot(valid_data, ax=ax, linewidth=2)
             else:
                 print(f"Warning: No valid data for {key} in {method}")
 
-        ax.set_xlabel(f'{method.capitalize()} {"Distance" if method in ["euclidean", "sqeuclidean"] else "Correlation"}')
-        ax.set_ylabel('Density')
-        ax.set_title(f'Distribution of {method.capitalize()} {"Distances" if method in ["euclidean", "sqeuclidean"] else "Correlations"}')
-        ax.legend()
+        ax.set_xlabel(f'{method.capitalize()} {"Distance" if method in ["euclidean", "sqeuclidean"] else "Correlation"}', fontsize=12)
+        ax.set_ylabel('Density', fontsize=12)
+        ax.set_title(f'Distribution of {method.capitalize()} {"Distances" if method in ["euclidean", "sqeuclidean"] else "Correlations"}', fontsize=14, fontweight='bold')
+        ax.legend(fontsize=10)
+        ax.tick_params(axis='both', which='major', labelsize=10)
+
+        # Add a text box with statistics
+        stats_text = "\n".join([f"{key.replace('_', ' ').title()}:\nMean: {np.mean(data[key]):.4f}\nMedian: {np.median(data[key]):.4f}" for key in data.keys()])
+        ax.text(0.95, 0.95, stats_text, transform=ax.transAxes, fontsize=10, verticalalignment='top', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
     plt.tight_layout()
     plot_file = os.path.join(output_dir, os.path.basename(embeddings_file).replace('.h5', f'_{"-".join(methods)}_distribution.png'))
-    plt.savefig(plot_file)
+    plt.savefig(plot_file, bbox_inches='tight')
     plt.close()
-
     print(f"Distribution plot saved to {plot_file}")
 
     print("\nComputing statistics")
     stats = {}
     for method, data in results.items():
-        for key in ['train_val', 'adversarial_train']:
+        for key in ['train_val', 'adversarial_train', 'synth_train']:
             valid_data = data[key][~np.isnan(data[key]) & ~np.isinf(data[key])]
             if len(valid_data) > 0:
                 stats[f'{method}_{key}_mean'] = np.mean(valid_data)
@@ -1227,6 +1267,151 @@ def compute_distances_and_plot(embeddings_file, output_dir, methods='euclidean')
                 print(f"Warning: No valid data for {key} in {method}")
 
     return stats
+
+
+
+import numpy as np
+from scipy.spatial.distance import cdist
+import matplotlib.pyplot as plt
+import os
+from tqdm import tqdm
+import random
+import seaborn as sns 
+
+def find_and_plot_similar_images(embeddings_file, train_dataloader, val_dataloader, synth_dataloader, output_dir, plot_percentage=1.0, validation_percentage=0.1):
+    if not 0 <= plot_percentage <= 1 or not 0 < validation_percentage <= 1:
+        raise ValueError("plot_percentage and validation_percentage must be between 0 and 1")
+
+    print(f"Loading embeddings from {embeddings_file}")
+    with h5py.File(embeddings_file, 'r') as f:
+        train_standard_embeddings = f['train_standard/embeddings'][:]
+        val_standard_embeddings = f['val_standard/embeddings'][:]
+        synth_standard_embeddings = f['synth_standard/embeddings'][:]
+        train_image_ids = f['train_standard/image_ids'][:]
+        val_image_ids = f['val_standard/image_ids'][:]
+        synth_image_ids = f['synth_standard/image_ids'][:]
+
+    print(f"Original shapes: train={train_standard_embeddings.shape}, val={val_standard_embeddings.shape}, synth={synth_standard_embeddings.shape}")
+
+    # Subsample embeddings and image_ids for validation
+    num_train = max(int(len(train_image_ids) * validation_percentage), 1)
+    num_val = max(int(len(val_image_ids) * validation_percentage), 1)
+    num_synth = max(int(len(synth_image_ids) * validation_percentage), 1)
+
+    train_indices = random.sample(range(len(train_image_ids)), num_train)
+    val_indices = random.sample(range(len(val_image_ids)), num_val)
+    synth_indices = random.sample(range(len(synth_image_ids)), num_synth)
+
+    train_standard_embeddings = train_standard_embeddings[train_indices]
+    val_standard_embeddings = val_standard_embeddings[val_indices]
+    synth_standard_embeddings = synth_standard_embeddings[synth_indices]
+    train_image_ids = train_image_ids[train_indices]
+    val_image_ids = val_image_ids[val_indices]
+    synth_image_ids = synth_image_ids[synth_indices]
+
+    print(f"Subsampled shapes: train={train_standard_embeddings.shape}, val={val_standard_embeddings.shape}, synth={synth_standard_embeddings.shape}")
+
+    print("Computing distances between synthetic and training/validation images")
+    train_distances = cdist(synth_standard_embeddings, train_standard_embeddings, metric='sqeuclidean')
+    val_distances = cdist(synth_standard_embeddings, val_standard_embeddings, metric='sqeuclidean')
+
+    print(f"Distance shapes: train={train_distances.shape}, val={val_distances.shape}")
+
+    print("Finding most similar images for each synthetic image")
+    min_train_distances = np.min(train_distances, axis=1)
+    min_val_distances = np.min(val_distances, axis=1)
+    
+    is_train_more_similar = min_train_distances <= min_val_distances
+    most_similar_train_indices = np.argmin(train_distances, axis=1)
+    most_similar_val_indices = np.argmin(val_distances, axis=1)
+    min_distances = np.minimum(min_train_distances, min_val_distances)
+
+    # Sort synthetic images by their similarity to the closest image
+    sorted_indices = np.argsort(min_distances)
+    num_images_to_plot = max(int(len(sorted_indices) * plot_percentage), 1)
+    indices_to_plot = sorted_indices[:num_images_to_plot]
+
+    print(f"Number of images to plot: {num_images_to_plot}")
+
+    # Create output directory
+    output_dir = os.path.join(output_dir, f'synthetic_similar_pairs_{plot_percentage:.2f}_validation_{validation_percentage:.2f}')
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Create sets of image IDs we need to load
+    train_ids_to_load = set(train_image_ids[most_similar_train_indices[indices_to_plot[is_train_more_similar[indices_to_plot]]]])
+    val_ids_to_load = set(val_image_ids[most_similar_val_indices[indices_to_plot[~is_train_more_similar[indices_to_plot]]]])
+    synth_ids_to_load = set(synth_image_ids[indices_to_plot])
+
+    print(f"IDs to load: train={len(train_ids_to_load)}, val={len(val_ids_to_load)}, synth={len(synth_ids_to_load)}")
+
+    # Create dictionaries to store only the needed images
+    train_images = {}
+    val_images = {}
+    synth_images = {}
+
+    def load_images(dataloader, ids_to_load, images_dict, set_name):
+        print(f"Loading necessary {set_name} images")
+        for batch in tqdm(dataloader, total=int(len(dataloader)*validation_percentage)):
+            for img, img_id in zip(batch['data'], batch['img_id']):
+                if img_id in ids_to_load:
+                    images_dict[img_id] = img.cpu().numpy()
+                    ids_to_load.remove(img_id)
+            if not ids_to_load or random.random() > validation_percentage:
+                break
+        if ids_to_load:
+            print(f"Warning: Could not find the following {set_name} images: {ids_to_load}")
+        print(f"Loaded {len(images_dict)} {set_name} images")
+
+    load_images(train_dataloader, train_ids_to_load, train_images, "training")
+    load_images(val_dataloader, val_ids_to_load, val_images, "validation")
+    load_images(synth_dataloader, synth_ids_to_load, synth_images, "synthetic")
+
+    print(f"Plotting and saving the top {num_images_to_plot} most similar image pairs")
+    plots_created = 0
+    for i, synth_idx in enumerate(tqdm(indices_to_plot)):
+        synth_id = synth_image_ids[synth_idx]
+        
+        if is_train_more_similar[synth_idx]:
+            real_idx = most_similar_train_indices[synth_idx]
+            real_id = train_image_ids[real_idx]
+            real_img = train_images.get(real_id)
+            distance = min_train_distances[synth_idx]
+            set_name = "Training"
+        else:
+            real_idx = most_similar_val_indices[synth_idx]
+            real_id = val_image_ids[real_idx]
+            real_img = val_images.get(real_id)
+            distance = min_val_distances[synth_idx]
+            set_name = "Validation"
+
+        synth_img = synth_images.get(synth_id)
+
+        if synth_img is None or real_img is None:
+            print(f"Warning: Missing image for synthetic ID {synth_id} or {set_name} ID {real_id}")
+            continue
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+        
+        ax1.imshow(np.transpose(synth_img, (1, 2, 0)))
+        ax1.set_title(f"Synthetic Image\nID: {synth_id}")
+        ax1.axis('off')
+
+        ax2.imshow(np.transpose(real_img, (1, 2, 0)))
+        ax2.set_title(f"Most Similar {set_name} Image\nID: {real_id}")
+        ax2.axis('off')
+
+        plt.suptitle(f"MSE Distance: {distance:.4f}\nRank: {i+1}/{num_images_to_plot}")
+        plt.tight_layout()
+
+        output_file = os.path.join(output_dir, f"pair_{i:04d}_synth_{synth_id}_{set_name.lower()}_{real_id}.png")
+        plt.savefig(output_file)
+        plt.close()
+        plots_created += 1
+
+    print(f"Total plots created: {plots_created}")
+    print(f"All image pairs saved in {output_dir}")
+
+
 
 def visualize_augmentations(dataloader, num_images=6, num_augmentations=5):
     # Get a batch of images

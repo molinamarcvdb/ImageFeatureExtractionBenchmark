@@ -10,7 +10,7 @@ from metrics import calculate_metrics
 from utils import link_azure_local, get_sets_content, get_realism_set_dict, realism_corr_net
 from single_image_metrics import main_single_metric_eval, compute_ground_truth_correlations
 from realism import realism_handling
-from privacy_benchmark import setup_training, create_dataloaders, visualize_augmentations, load_best_model_for_inference, inference_and_save_embeddings, compute_distances_and_plot   
+from privacy_benchmark import setup_training, create_dataloaders, visualize_augmentations, load_best_model_for_inference, inference_and_save_embeddings, compute_distances_and_plot, find_and_plot_similar_images   
 from tqdm import tqdm
 import traceback
 
@@ -272,16 +272,18 @@ def main():
 
         for network_name in network_names:
             try:
-                model, processor, device, train_standard_loader, val_loader = load_best_model_for_inference(network_name, config)
+                model, processor, device, train_loader, val_loader, synth_loader = load_best_model_for_inference(network_name, config)
 
                 # Perform inference and save embeddings
-                embeddings_file = inference_and_save_embeddings(model, processor, device, train_standard_loader,  val_loader, network_name, output_dir)
-
+                #embeddings_file = inference_and_save_embeddings(model, processor, device, train_loader,  val_loader, synth_loader, network_name, output_dir)
+                embeddings_file = '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/embeddings/densenet121_embeddings.h5'
                 # Compute MSD between train_standard and val_standard (baseline)
                 # and between train_adversarial and train_standard
                 if os.path.exists(embeddings_file):
                     print(f"Processing {network_name}")
-                    stats = compute_distances_and_plot(embeddings_file, output_dir, methods=['euclidean', 'pearson', 'spearman'])
+                    stats = compute_distances_and_plot(embeddings_file, output_dir, methods=['euclidean'])
+                    find_and_plot_similar_images(embeddings_file, train_loader, val_loader, synth_loader, output_dir, plot_percentage=0.1)
+                    
                     print(f"Statistics for {network_name}:")
                     for key, value in stats.items():
                         print(f"  {key}: {value}")
@@ -289,6 +291,16 @@ def main():
             except Exception as e:
                 print(f"Error processing {network_name}: {str(e)}")
                 print(traceback.format_exc())
+    if config.get('degradation_study', False):
+        for degrad in config['degradations']:
+            degraded_dl = degrade_dataset(config)
+            
+        pass
+        
+        
+
+
+
 
 if __name__ == "__main__":
     main()

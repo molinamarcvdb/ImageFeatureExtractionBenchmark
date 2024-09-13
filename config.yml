@@ -2,26 +2,27 @@
 feature_extraction: false
 eval_only: false
 sing_image_eval: false
-realism_correlation: true 
-privacy_benchmark: false 
-adversarial_privacy_assesment: false
+realism_correlation: false 
+privacy_benchmark: true 
+adversarial_privacy_assesment: false 
+degraded_datasets: false
 # Paths to the real and synthetic datasets
 real_dataset_path: '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/output_images_512_all'
-synthetic_dataset_path: './data/synthetic/diffusion'
+synthetic_dataset_path: 'data/synthetic/diffusion'
 
 # List of networks to use for feature extraction
 networks:
-  - 'rad_inception'
-  - 'resnet50'
-  - 'rad_resnet50'
+  #- 'rad_inception'
+  #- 'resnet50'
+  #- 'rad_resnet50'
   #- 'inceptionresnet'
   #- 'rad_inceptionresnet'
-  - 'densenet121'
-  - 'rad_densenet'
-  #- 'clip'
-  #- 'rad_clip'
-  #- 'rad_dino'
-  #- 'dino'
+  #- 'densenet121'
+  # 'rad_densenet'
+  - 'clip'
+  - 'rad_clip'
+  - 'rad_dino'
+  - 'dino'
   - 'inception'
 
 metrics:
@@ -35,7 +36,7 @@ metrics:
   - mmd
 
 # Batch size for feature extraction
-batch_size: 200
+batch_size: 64 
 inference_bs: 400
 # Number of sets to divide each dataset into
 num_sets: 10
