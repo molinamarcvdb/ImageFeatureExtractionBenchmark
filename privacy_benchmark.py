@@ -57,13 +57,13 @@ class SiameseNetwork(nn.Module):
         if self.backbone_type == 'torch':
             if isinstance(self.backbone, models.ResNet):
                 in_features = self.backbone.fc.in_features
-                #self.backbone.fc = nn.Identity()
+                self.backbone.fc = nn.Identity()
             elif isinstance(self.backbone, models.DenseNet):
                 in_features = self.backbone.classifier.in_features
-                #self.backbone.classifier = nn.Identity()
+                self.backbone.classifier = nn.Identity()
             elif isinstance(self.backbone, models.Inception3):
                 in_features = self.backbone.fc.in_features
-                #self.backbone.fc = nn.Identity()
+                self.backbone.fc = nn.Identity()
                 if hasattr(self.backbone, 'AuxLogits'):
                     self.backbone.AuxLogits = None
             else:
@@ -106,6 +106,17 @@ class SiameseNetwork(nn.Module):
 
         self.fc_end = nn.Linear(self.n_features, 1)
         self.to(self.device)
+
+    def _get_features(self, x):
+        """Helper method to flexibly extract features from various model outputs"""
+        if hasattr(x, 'logits'):
+            return x.logits
+        elif isinstance(x, dict) and 'logits' in x:
+            return x['logits']
+        elif isinstance(x, (tuple, list)):
+            return x[0]  # Assume the first element contains the main output
+        else:
+            return x  # Assume x is already the feature tensor we want
     
     def process_input(self, x):
         if self.backbone_type == 'huggingface' and self.processor is not None:
@@ -137,9 +148,11 @@ class SiameseNetwork(nn.Module):
     def forward(self, input1=None, input2=None, resnet_only=False):
         if resnet_only:
             if self.backbone_type == 'torch':
-                features = self.backbone(input1)
+                output = self.backbone(input1)
+                features = self.fc(self._get_features(output))
 
                 return features
+
 
             elif self.backbone_type == 'huggingface':
                 #input1 = self.process_input(input1)
@@ -663,9 +676,9 @@ def setup_training(root_dir, network_name, **kwargs):
             "train_loss": epoch_loss,
             "val_loss": val_loss,
             "batch_size": train_loader.batch_sampler.batch_size,
-            "positive_samples": wandb.Histogram(pos_sim),
-            "negative_samples": wandb.Histogram(neg_sim),
-            "negative_samples_augmented": wandb.Histogram(neg_sim_aug),
+            #"positive_samples": wandb.Histogram(pos_sim),
+            #"negative_samples": wandb.Histogram(neg_sim),
+            #"negative_samples_augmented": wandb.Histogram(neg_sim_aug),
             "learning rate": optimizer.param_groups[0]['lr']
         })
 
