@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import torch
+import torch.nn as nn
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel, AutoModel, AutoImageProcessor
 from tensorflow.keras.applications import InceptionV3, ResNet50, InceptionResNetV2, DenseNet121
@@ -9,6 +10,9 @@ from tensorflow.keras.applications.resnet50 import preprocess_input as resnet_pr
 from tensorflow.keras.applications.inception_resnet_v2 import preprocess_input as inception_resnet_preprocess
 from tensorflow.keras.applications.densenet import preprocess_input as densenet_preprocess
 from tensorflow.keras.preprocessing import image as keras_image
+
+from ijepa.src.helper import init_model
+from ijepa.src.models.vision_transformer import vit_huge
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -106,6 +110,35 @@ def initialize_model(network_name):
     else:
         raise ValueError(f"Unsupported network name: {network_name}")
     return model, processor, target_size, preprocess_fn
+
+class IJEPAEncoder(nn.Module):
+    def __init__(self, device='cuda', patch_size=14, crop_size=224, pred_depth=12, 
+                 pred_emb_dim=384, model_name='vit_huge', output_dim=None, 
+                 use_attentive_pooling=False, num_queries=1, num_heads=16, 
+                 mlp_ratio=4.0, pooler_depth=1, init_std=0.02, qkv_bias=True, 
+                 complete_block=True):
+        super().__init__()
+        self.device = device
+
+        # Initialize the model
+        self.encoder, _ = init_model(
+            device=self.device,
+            patch_size=patch_size,
+            crop_size=crop_size,
+            pred_depth=pred_depth,
+            pred_emb_dim=pred_emb_dim,
+            model_name=model_name
+        )
+        
+
+        self.encoder_output_dim = self.encoder.norm.normalized_shape[0]
+
+    def forward(self, x):
+
+        return self.encoder(x.to(self.device))
+
+
+
 
 def extract_features_from_directory(list_of_img, network_name, batch_size=16):
     model, processor, target_size, preprocess_fn = initialize_model(network_name)

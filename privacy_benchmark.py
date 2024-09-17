@@ -42,6 +42,7 @@ from scipy.stats import spearmanr, kendalltau
 from pytorch_metric_learning import miners, losses
 import json
 from sklearn.model_selection import train_test_split
+from networks import IJEPAEncoder
 
 class SiameseNetwork(nn.Module):
 
@@ -196,7 +197,25 @@ def load_and_remap_state_dict(model, filename, repo_id='molinamarc/syntheva'):
         return model
     except Exception as e:
         print(f"Error loading {filename}: {str(e)}")
-        return model  # Return the original model if loading fails
+        return model  # Return the original model if loading failsi
+
+def loadIJEPA_state_dict(model, repo_id='molinamarc/syntheva'):
+    load_path = 'IN22K-vit.h.14-900e.pth.tar' 
+    ckpt = torch.load(load_path, map_location=torch.device('cpu'))
+    pretrained_dict = ckpt['encoder']
+
+    # Loading encoder
+    model_dict = model.state_dict()
+    for k, v in pretrained_dict.items():
+        if k.startswith('module.'):
+            k = k[len("module."):]
+        if k in model_dict:
+            model_dict[k].copy_(v)
+
+    
+    model.load_state_dict(model_dict)
+
+    return model 
 
 def initialize_model(network_name):
     
@@ -254,6 +273,10 @@ def initialize_model(network_name):
     elif network_name.lower() == "rad_densenet":
         backbone = models.densenet121(pretrained=False)
         backbone = load_and_remap_state_dict(backbone, 'RadImageNet-DenseNet121_notop.pth')
+        backbone_type = 'torch'
+    elif network_name.lower() == "ijepa":
+        backbone = IJEPAEncoder()
+        backbone = loadIJEPA_state_dict(backbone)
         backbone_type = 'torch'
     else:
         raise ValueError(f"Unsupported network name: {network_name}")
