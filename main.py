@@ -138,7 +138,7 @@ def main():
     metrics = config['metrics']
     do_z_score = config['do_z_score']
 
-    network_list = ['inception', 'resnet50', 'resnet18', 'clip', 'densenet121', 'rad_clip', 'rad_dino', 'dino', 'rad_inception', 'rad_resnet50', 'rad_densenet']
+    network_list = ['inception', 'resnet50', 'resnet18', 'clip', 'densenet121', 'rad_clip', 'rad_dino', 'dino', 'rad_inception', 'rad_resnet50', 'rad_densenet', 'ijepa']
 # Create a timestamp for the run
     global timestamp
     
@@ -236,26 +236,6 @@ def main():
     
     if config.get('privacy_benchmark', False):
         print("Running privacy benchmark...")
-        # Extract relevant parameters from config
-        privacy_params = {
-            'n_features': config.get('n_features', 128),
-            'batch_size': config.get('batch_size', 32),
-            'target_resolution': tuple(config.get('target_resolution', (224, 224))),
-            'split_ratio': config.get('split_ratio', 0.8),
-            'num_workers': config.get('num_workers', 4),
-            'pin_memory': config.get('pin_memory', True),
-            'base_lr': config.get('base_lr', 1e-3),
-            'n_epochs': config.get('n_epochs', 10),
-            'temperature': config.get('temperature', 0.5),
-            'save_model_interval': config.get('save_model_interval', 5),
-            'multi_gpu': config.get('multi_gpu', False),
-            'loss_type': config.get('loss_type', 'triplet'),
-            'margin': config.get('margin', 1.0),
-            'swap': config.get('swap',  False),
-            'smooth_loss': config.get('smooth_loss', False),
-            'triplets_per_anchor': 'all',
-            'unfreeze_epoch': config.get('unfreeze_epoch', 10)
-        }
 
         for network_name in config['networks']:
             print(f"Processing network: {network_name}")
@@ -263,7 +243,7 @@ def main():
                 train_loader, val_loader, device = setup_training(
                     root_dir=config['real_dataset_path'],
                     network_name=network_name,
-                    **privacy_params
+                    **config
                 )
     if config.get('adversarial_privacy_assesment', False):
 
@@ -272,17 +252,17 @@ def main():
 
         for network_name in network_names:
             try:
-                model, processor, device, train_loader, val_loader, synth_loader = load_best_model_for_inference(network_name, config)
+                model, device, train_loader, val_loader, synth_loader = load_best_model_for_inference(network_name, config)
 
                 # Perform inference and save embeddings
-                #embeddings_file = inference_and_save_embeddings(model, processor, device, train_loader,  val_loader, synth_loader, network_name, output_dir)
-                embeddings_file = '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/embeddings/densenet121_embeddings.h5'
+                embeddings_file = inference_and_save_embeddings(model, device, train_loader,  val_loader, synth_loader, network_name, output_dir)
+                
                 # Compute MSD between train_standard and val_standard (baseline)
                 # and between train_adversarial and train_standard
                 if os.path.exists(embeddings_file):
                     print(f"Processing {network_name}")
                     stats = compute_distances_and_plot(embeddings_file, output_dir, methods=['euclidean'])
-                    find_and_plot_similar_images(embeddings_file, train_loader, val_loader, synth_loader, output_dir, plot_percentage=0.1)
+                    find_and_plot_similar_images(embeddings_file, train_loader, val_loader, synth_loader, output_dir, plot_percentage=1)
                     
                     print(f"Statistics for {network_name}:")
                     for key, value in stats.items():

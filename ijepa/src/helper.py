@@ -4,17 +4,27 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 #
-
+import os
 import logging
 import sys
+# Get the current file's directory
+current_dir = os.path.dirname(__file__)
+
+# Get the first parent directory
+first_parent_dir = os.path.abspath(os.path.join(current_dir, os.pardir))
+
+# Get the second parent directory
+second_parent_dir = os.path.abspath(os.path.join(first_parent_dir, os.pardir))
+
+sys.path.append(second_parent_dir)
 
 import torch
 
-import src.models.vision_transformer as vit
-from src.utils.schedulers import (
+import ijepa.src.models.vision_transformer as vit
+from ijepa.src.utils.schedulers import (
     WarmupCosineSchedule,
     CosineWDSchedule)
-from src.utils.tensors import trunc_normal_
+from ijepa.src.utils.tensors import trunc_normal_
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()

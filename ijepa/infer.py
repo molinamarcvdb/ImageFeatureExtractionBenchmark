@@ -4,7 +4,7 @@ import sys
 import os
 import torch.nn as nn
 import torch.nn.functional as F
-
+from transformers import CLIPConfig
 # Get the parent directory of the current script
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 
@@ -12,9 +12,8 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.append(parent_dir)
 
 
-from src.helper import init_model
-from src.models.vision_transformer import vit_huge
-from privacy_benchmark import initialize_model
+from ijepa.src.helper import init_model
+from ijepa.src.models.vision_transformer import vit_huge
 
 class MLP(nn.Module):
     def __init__(
@@ -350,7 +349,7 @@ class ContrastiveNetwork(nn.Module):
         self.init_backbone(backbone_name)
         self.append_head()
 
-        print(self.backbone)
+        #print(self.backbone)
 
     def init_backbone(self, backbone_name):
         self.backbone, self.backbone_type, self.processor = initialize_model(backbone_name)
@@ -377,7 +376,7 @@ class ContrastiveNetwork(nn.Module):
         if hasattr(self.backbone, 'fc') and hasattr(self.backbone.fc, 'in_features'):
             self.backbone_output_dim = self.backbone.fc.in_features
             self.backbone.fc = nn.Identity()
-            self.backbone.avgpool = nn.Identity()
+            #self.backbone.avgpool = nn.Identity()
             if hasattr(self.backbone, 'AuxLogits'):
                 self.backbone.AuxLogits = None
 
@@ -404,21 +403,31 @@ class ContrastiveNetwork(nn.Module):
         elif isinstance(x, dict) and 'logits' in x:
             return x['logits']
         elif isinstance(x, (tuple, list)):
-            return x[0]  # Assume the first element contains the main output
+            return x[0] # Assume the first element contains the main output
+        elif hasattr(x, 'last_hidden_state'):
+            return x.last_hidden_state
         else:
             return x  # Assume x is already the feature tensor we want
               
     def forward(self, x):
         
+        if hasattr(self.backbone, 'config') and isinstance(self.backbone.config, CLIPConfig):
 
-        features = self.backbone(x.to(self.device))
+            features = self._get_features(self.backbone.vision_model(x.to(self.device)))
+        
+        else:
+            features = self._get_features(self.backbone(x.to(self.device)))
         print(features.shape)
         if self.attentive_probing:
+            if len(features.shape) == 2:
+                features = features.unsqueeze(1)
+
             features = self.output_layer(features)  # This should output [batch_size, num_queries, backbone_output_dim]
             features = features.squeeze(1)  # Remove the num_queries dimension
             features = self.final_projection(features)
         else:
-            features = features.mean(dim=1)  # Global average pooling
+            if len(features.shape) == 3: 
+                features = features.mean(dim=1)  # Global average pooling
             features = self.output_layer(features)
         return features
 # Usage example:
@@ -433,10 +442,25 @@ if __name__ == "__main__":
 
     ## Load pre-trained weights
     #model.load_encoder('/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/syntheva/pretrained/jepa/IN22K-vit.h.14-900e.pth.tar')
-    model = ContrastiveNetwork('resnet50', attentive_probing=False)
-    model.to('cuda')
-    # Test the model
-    img = torch.empty([1, 3, 224, 224])
-    with torch.no_grad():
-        feature = model(img)
-        print(feature.shape)
+    for model_name in  ['inception', 'resnet50', 'resnet18', 'clip', 'densenet121', 'rad_clip', 'rad_dino', 'dino', 'rad_inception', 'rad_resnet50', 'rad_densenet', 'ijepa']:
+
+        print(f'Processing model {model_name}')
+        model = ContrastiveNetwork(model_name, attentive_probing=True).eval()
+        model.to('cuda')
+        # Test the model
+        img = torch.rand([1, 3, 224, 224])
+        with torch.no_grad():
+            feature = model(img)
+
+            print(feature.shape)
+
+
+        model = ContrastiveNetwork(model_name, attentive_probing=False).eval()
+        model.to('cuda')
+        # Test the model
+        img = torch.rand([1, 3, 224, 224])
+        with torch.no_grad():
+            feature = model(img)
+            print(feature.shape)
+
+            print()

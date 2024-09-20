@@ -42,6 +42,7 @@ from src.utils.logging import (
     AverageMeter)
 from src.utils.tensors import repeat_interleave_batch
 from src.datasets.imagenet1k import make_imagenet1k
+from src.datasets.imageDataset import make_contrastive_data 
 
 from src.helper import (
     load_checkpoint,
@@ -63,6 +64,24 @@ torch.backends.cudnn.benchmark = True
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()
 
+def setup_distributed():
+    if 'WORLD_SIZE' in os.environ:
+        world_size = int(os.environ['WORLD_SIZE'])
+        rank = int(os.environ['RANK'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+    else:
+        world_size = 1
+        rank = 0
+        local_rank = 0
+
+    torch.cuda.set_device(local_rank)
+
+    # Always initialize the process group, even for single-GPU setups
+    try:
+        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+    except RuntimeError as e:
+        print(f'RuntimeError due to: {e}')
+    return world_size, rank, local_rank
 
 def main(args, resume_preempt=False):
 
@@ -136,7 +155,8 @@ def main(args, resume_preempt=False):
         pass
 
     # -- init torch distributed backend
-    world_size, rank = init_distributed()
+    world_size, rank, local_rank = setup_distributed()
+
     logger.info(f'Initialized (rank/world-size) {rank}/{world_size}')
     if rank > 0:
         logger.setLevel(logging.ERROR)
@@ -147,8 +167,8 @@ def main(args, resume_preempt=False):
     latest_path = os.path.join(folder, f'{tag}-latest.pth.tar')
     load_path = None
     if load_model:
-        load_path = os.path.join(folder, r_file) if r_file is not None else latest_path
-
+        load_path = r_file if r_file is not None else latest_path
+        print(load_path)
     # -- make csv_logger
     csv_logger = CSVLogger(log_file,
                            ('%d', 'epoch'),
@@ -189,7 +209,7 @@ def main(args, resume_preempt=False):
         color_jitter=color_jitter)
 
     # -- init data-loaders/samplers
-    _, unsupervised_loader, unsupervised_sampler = make_imagenet1k(
+    _, _, unsupervised_loader, val_unsupervised_loader, unsupervised_sampler, val_unsupervised_loader= make_contrastive_data(
             transform=transform,
             batch_size=batch_size,
             collator=mask_collator,
@@ -201,7 +221,9 @@ def main(args, resume_preempt=False):
             root_path=root_path,
             image_folder=image_folder,
             copy_data=copy_data,
-            drop_last=True)
+            drop_last=True,
+            target_res=crop_size
+            )
     ipe = len(unsupervised_loader)
 
     # -- init optimizer and scheduler
@@ -231,6 +253,7 @@ def main(args, resume_preempt=False):
     start_epoch = 0
     # -- load training checkpoint
     if load_model:
+        print(load_path)
         encoder, predictor, target_encoder, optimizer, scaler, start_epoch = load_checkpoint(
             device=device,
             r_path=load_path,
@@ -279,7 +302,7 @@ def main(args, resume_preempt=False):
 
             def load_imgs():
                 # -- unsupervised imgs
-                imgs = udata[0].to(device, non_blocking=True)
+                imgs = udata['data_pos'].to(device, non_blocking=True)
                 masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
                 masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
                 return (imgs, masks_1, masks_2)

@@ -43,6 +43,7 @@ from pytorch_metric_learning import miners, losses
 import json
 from sklearn.model_selection import train_test_split
 from networks import IJEPAEncoder
+from ijepa.infer import AttentivePooler
 
 class SiameseNetwork(nn.Module):
 
@@ -171,6 +172,105 @@ class SiameseNetwork(nn.Module):
             output = self.fc_end(difference)
 
         return output, output1, output2
+
+class ContrastiveNetwork(nn.Module):
+    def __init__(
+        self,
+        backbone_name: str,
+        feature_dim: int = 768,
+        attentive_probing: bool = False,
+        device: str = 'cuda'
+    ):
+        super(ContrastiveNetwork, self).__init__()
+        
+        self.attentive_probing = attentive_probing
+        self.feature_dim = feature_dim
+        self.device = device
+
+        self.init_backbone(backbone_name)
+        self.append_head()
+
+        #print(self.backbone)
+
+    def init_backbone(self, backbone_name):
+        self.backbone, self.backbone_type, self.processor = initialize_model(backbone_name)
+
+    def append_head(self):
+        
+        self.get_backbone_out_dim()
+
+        print(f"Backbone output dimension: {self.backbone_output_dim}")   
+        
+        if self.attentive_probing:
+            self.fc = AttentivePooler(
+                embed_dim=self.backbone_output_dim,
+                num_queries=1,
+                num_heads=8,
+                mlp_ratio=4.0,
+                depth=1
+            ) 
+            self.final_projection = nn.Linear(self.backbone_output_dim, self.feature_dim)
+        else:
+            self.fc = nn.Linear(self.backbone_output_dim, self.feature_dim)
+
+    def get_backbone_out_dim(self):
+        if hasattr(self.backbone, 'fc') and hasattr(self.backbone.fc, 'in_features'):
+            self.backbone_output_dim = self.backbone.fc.in_features
+            self.backbone.fc = nn.Identity()
+            #self.backbone.avgpool = nn.Identity()
+            if hasattr(self.backbone, 'AuxLogits'):
+                self.backbone.AuxLogits = None
+
+        elif hasattr(self.backbone, 'classifier') and hasattr(self.backbone.classifier, 'in_features'):
+            self.backbone_output_dim = self.backbone.classifier.in_features
+            self.backbone.classifier = nn.Identity()
+
+        elif hasattr(self.backbone, 'config') and hasattr(self.backbone.config, 'vision_config') and hasattr(self.backbone.config.vision_config, 'hidden_size'):
+            self.backbone_output_dim = self.backbone.config.vision_config.hidden_size
+
+        elif hasattr(self.backbone, 'encoder_output_dim'):
+            self.backbone_output_dim = self.backbone.encoder_output_dim
+        
+        elif hasattr(self.backbone, 'config') and hasattr(self.backbone.config, 'hidden_size'):
+            self.backbone_output_dim = self.backbone.config.hidden_size
+        
+        else:
+            raise 'No ouput dim feture found'
+
+    def _get_features(self, x):
+        """Helper method to flexibly extract features from various model outputs"""
+        if hasattr(x, 'logits'):
+            return x.logits
+        elif isinstance(x, dict) and 'logits' in x:
+            return x['logits']
+        elif isinstance(x, (tuple, list)):
+            return x[0] # Assume the first element contains the main output
+        elif hasattr(x, 'last_hidden_state'):
+            return x.last_hidden_state
+        else:
+            return x  # Assume x is already the feature tensor we want
+              
+    def forward(self, x):
+        
+        if hasattr(self.backbone, 'config') and isinstance(self.backbone.config, CLIPConfig):
+
+            features = self._get_features(self.backbone.vision_model(x.to(self.device)))
+        
+        else:
+            features = self._get_features(self.backbone(x.to(self.device)))
+
+        if self.attentive_probing:
+            if len(features.shape) == 2:
+                features = features.unsqueeze(1)
+
+            features = self.fc(features)  # This should output [batch_size, num_queries, backbone_output_dim]
+            features = features.squeeze(1)  # Remove the num_queries dimension
+            features = self.final_projection(features)
+        else:
+            if len(features.shape) == 3: 
+                features = features.mean(dim=1)  # Global average pooling
+            features = self.fc(features)
+        return features
 
 def remap_keys(state_dict):
     new_state_dict = OrderedDict()
@@ -439,16 +539,18 @@ def find_executable_batch_size(function: callable = None, starting_batch_size: i
 
 
 def train_val_paths(data_path, config):
+    
+    from ensure_patient_leakage import create_train_val_split
 
-    all_paths = []
-    for root, _, files in os.walk(data_path):
-        for file in files:
-            if file.endswith((".png", ".jpeg", ".jpg")):
-                all_paths.append(os.path.join(root, file))
-    all_paths.sort()
-
-    # Split paths into train and validation
-    train_paths, val_paths = train_test_split(all_paths, test_size=1-config['split_ratio'], random_state=42)
+    train_paths, val_paths = create_train_val_split(
+            patient_data_dir = config['real_dataset_path'],
+            patient_info_path = config['dataset_info'],
+            patient_id = config['unique_individual_id'],
+            unique_identifier_col = config['unique_image_id'],
+            train_ratio = config['split_ratio'],
+            extension = config['image_extension'],
+            seed = config['seed']
+            )
 
     return train_paths, val_paths
 
@@ -465,29 +567,8 @@ def setup_training(root_dir, network_name, **kwargs):
         DataLoader, DataLoader, torch.device: Training DataLoader, Validation DataLoader, and device.
     """
     
-    # Default values
-    defaults = {
-        'n_features': 128,
-        'batch_size': 32,
-        'target_resolution': (224, 224),
-        'split_ratio': 0.8,
-        'num_workers': 4,
-        'pin_memory': True,
-        'base_lr': 1e-3,
-        'n_epochs': 10,
-        'temperature': 0.5,
-        'save_model_interval': 5,
-        'multi_gpu': False,
-        'loss_type': 'ntxent',  # New parameter to choose between 'ntxent' and 'margin'
-        'margin': 1.0,
-        'swap': False,
-        'smooth_loss': False,
-        'triplets_per_anchor': 'all',
-        'unfreeze_epoch': 5
-        }
-    
     # Update defaults with provided kwargs
-    config = {**defaults, **kwargs}
+    config = {**kwargs}
     print(f'Starting trainign wiht the following config: \n {config}')
 
     # Set up device
@@ -495,21 +576,17 @@ def setup_training(root_dir, network_name, **kwargs):
     if 'clip' in network_name:
         config['batch_size'] = 64 # Define model
     try:
-        backbone_model, backbone_type, processor = initialize_model(network_name)
         
-        model = SiameseNetwork(backbone_model, backbone_type, processor, in_channels=3,  n_features = config['n_features'])
+        model = ContrastiveNetwork(network_name, feature_dim = config['n_features'], attentive_probing = config['attentive_probing'], device = device)
     except ValueError as e:
         print(network_name, e)
         raise ValueError(f'Error {e} with {network_name}')
 
 
     # Select target reolution for eahc specific model 
-    if backbone_type == 'torch':
-        target_res = (224, 224)
-        if isinstance(backbone_model, models.Inception3):
-            target_res = (299, 299)
-    elif backbone_type == 'huggingface':
-        target_res = (224, 224)
+    target_res = (224, 224)
+    if isinstance(model.backbone, models.Inception3):
+        target_res = (299, 299)
     
     if config['multi_gpu']:
         model = torch.nn.DataParallel(model)
@@ -527,6 +604,12 @@ def setup_training(root_dir, network_name, **kwargs):
     ckpt_dir = os.path.join('./checkpoints', run_name)
     os.makedirs(ckpt_dir, exist_ok=True)
     
+    # Save config in a json
+    json_file_path = os.path.join(ckpt_dir, f"config.json")
+
+    with open(json_file_path, 'w') as json_file:
+        json.dump(config, json_file, indent=2)
+
     # Create the dataset
     train_paths, val_paths = train_val_paths(root_dir, config)
 
@@ -640,7 +723,7 @@ def setup_training(root_dir, network_name, **kwargs):
   
       # Define optimizer, scheduler, and loss function
     optimizer = torch.optim.Adam(model.parameters(), lr=config['base_lr'])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['n_epochs'], eta_min=config['base_lr'] / 1000.0)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['n_epochs'], eta_min=config['base_lr'])
 
        # Choose loss function based on config
     if config['loss_type'].lower() == 'ntxent':
@@ -661,17 +744,15 @@ def setup_training(root_dir, network_name, **kwargs):
     val_losses = []
 
     # Freeze the backbone initially
-    freeze_backbone(model, backbone_type)
+    freeze_backbone(model)
     
     print('Starting training')    
     for epoch in range(config['n_epochs']):
 
         if epoch == config['unfreeze_epoch']:
             print(f"Unfreezing the entire network at epoch {epoch}")
-            unfreeze_backbone(model,  backbone_type)
-            # Optionally, you might want to adjust the learning rate here
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = config['base_lr'] / 10  # Reduce learning rate when unfreezing
+            unfreeze_backbone(model)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['n_epochs'], eta_min=config['base_lr']/config['downscaling_after_freezing'])
 
         epoch_loss = train_epoch(config['batch_size'], model, train_loader, optimizer, scheduler, device, LossTr, epoch, config)
 
@@ -708,28 +789,19 @@ def setup_training(root_dir, network_name, **kwargs):
     wandb.finish()
     return train_loader, val_loader, device
 
-def freeze_backbone(model, backbone_type):
-    if backbone_type == 'torch':
-        for name, param in model.named_parameters():
-            if "fc" not in name and 'backbone' not in name:  # Don't freeze the final FC layer for PyTorch models
-                param.requires_grad = False
-            else:
-                param.requires_grad = True
-    elif backbone_type == 'huggingface':
-        for name, param in model.named_parameters():
-            if "fc" not in name and 'backbone' not in name:  # Don't freeze the final FC layer for PyTorch models
-                param.requires_grad = False
-            else:
-                param.requires_grad = True
-    else:
-        raise ValueError(f"Unsupported backbone type: {model.backbone_type}")
-
-def unfreeze_backbone(model, backbone_type):
-    if backbone_type in ['torch', 'huggingface']:
-        for param in model.parameters():
+def freeze_backbone(model):
+    print('Freezing backbone')
+    for name, param in model.named_parameters():
+        if 'backbone' in name:
+            param.requires_grad = False
+        else:
             param.requires_grad = True
-    else:
-        raise ValueError(f"Unsupported backbone type: {model.backbone_type}")  
+
+
+def unfreeze_backbone(model):
+    for param in model.parameters():
+        param.requires_grad = True
+
 #@find_executable_batch_size(starting_batch_size=config['batch_size'])
 def train_epoch(batch_size, model, train_loader, optimizer, scheduler, device, LossTr, epoch, config):
     model.train()
@@ -746,22 +818,9 @@ def train_epoch(batch_size, model, train_loader, optimizer, scheduler, device, L
         if Pos11.dim() != 4:
             raise ValueError(f"Expected 4D input, got {Pos11.dim()}D with shape {Pos11.shape}")
        
-        PosEmb11 = model(Pos11, resnet_only=True)
-        PosEmb12 = model(Pos12, resnet_only=True)
+        PosEmb11 = model(Pos11)
+        PosEmb12 = model(Pos12)
 
-        try:
-            # First, try to handle the output as a tensor
-            PosEmb11 = PosEmb11.requires_grad_()
-            PosEmb12 = PosEmb12.requires_grad_()
-        except AttributeError:
-            # If it's not a tensor, it might be InceptionOutputs
-            try:
-                PosEmb11 = PosEmb11.logits
-                PosEmb12 = PosEmb12.logits
-            except AttributeError as e:
-                # If it's neither a tensor nor has logits, print the type for debugging
-                print(f"Unexpected output type: {type(PosEmb11)}")
-                raise AttributeError(f'{e}')           
          # Create "labels" based on batch indices
         Labels = torch.arange(PosEmb11.shape[0], device=device) 
 
@@ -798,8 +857,8 @@ def validate(model, val_loader, device, LossTr, config):
         Pos11 = batch['data'].to(device)
         Pos12 = batch['data_pos'].to(device)
         with torch.no_grad():
-            PosEmb11 = model(Pos11, resnet_only=True)
-            PosEmb12 = model(Pos12, resnet_only=True)
+            PosEmb11 = model(Pos11)
+            PosEmb12 = model(Pos12)
 
         Labels = torch.arange(PosEmb11.shape[0], device=device)
         
@@ -854,9 +913,9 @@ def train_by_models(real_data_dir: str, network_names: list, **kwargs):
 def load_best_model_for_inference(network_name, config, checkpoints_dir='./checkpoints', batch_size=32, num_workers=4):
     print(f"Loading best model for inference for network: {network_name}")
     
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # Initialize the model
-    backbone_model, backbone_type, processor = initialize_model(network_name)
-    model = SiameseNetwork(backbone_model, backbone_type, processor, in_channels=3, n_features=config['n_features'])
+    model = ContrastiveNetwork(network_name, feature_dim = config['n_features'], attentive_probing = config['attentive_probing'], device=device)
 
     # Find the most recent checkpoint directory for this network
     network_checkpoints = glob.glob(os.path.join(checkpoints_dir, f"*_{network_name}"))
@@ -882,8 +941,10 @@ def load_best_model_for_inference(network_name, config, checkpoints_dir='./check
     state_dict = torch.load(best_model_path, map_location='cpu')
 
     # Load the state dict into the model
-    model.load_state_dict(state_dict)
-
+    try:
+        model.load_state_dict(state_dict, strict = True)
+    except:
+        model.load_state_dict(state_dict, strict = False)
     # Set the model to evaluation mode
     model.eval()
 
@@ -916,7 +977,7 @@ def load_best_model_for_inference(network_name, config, checkpoints_dir='./check
     train_standard_loader, val_loader, synth_loader = create_dataloaders(
         train_paths, val_paths, synthetic_paths, config)
 
-    return model, processor, device, train_standard_loader, val_loader, synth_loader
+    return model, device, train_standard_loader, val_loader, synth_loader
 
 class ImageDataset(Dataset):
     def __init__(self, image_paths, target_resolution: int = 224, transform=None):
@@ -1106,7 +1167,7 @@ def create_dataloaders(train_paths, val_paths, synthetic_paths, config):
 
     return train_loader, val_loader, synth_loader
 
-def inference_and_save_embeddings(model, processor, device, train_standard_loader, val_standard_loader, synth_loader, network_name, output_dir):
+def inference_and_save_embeddings(model, device, train_standard_loader, val_standard_loader, synth_loader, network_name, output_dir):
     model.eval()
     os.makedirs(output_dir, exist_ok=True)
 
@@ -1125,7 +1186,7 @@ def inference_and_save_embeddings(model, processor, device, train_standard_loade
                     images = images.to(device)
                     current_image_ids = batch['img_id']
 
-                    output = model(images, resnet_only=True)
+                    output = model(images)
 
                     if not isinstance(output, torch.Tensor):
                         output = output.logits if hasattr(output, 'logits') else output[0]
@@ -1171,6 +1232,7 @@ def inference_and_save_embeddings(model, processor, device, train_standard_loade
     except Exception as e:
         print(f"Error processing {network_name}: {str(e)}")
         print(traceback.format_exc())
+        raise Exception
 
     return output_file
 
@@ -1314,7 +1376,57 @@ from tqdm import tqdm
 import random
 import seaborn as sns 
 
-def find_and_plot_similar_images(embeddings_file, train_dataloader, val_dataloader, synth_dataloader, output_dir, plot_percentage=1.0, validation_percentage=0.1):
+def decode_byte_strings(data):
+    if isinstance(data, bytes):
+        return data.decode('utf-8')
+    elif isinstance(data, np.ndarray):
+        return np.array([item.decode('utf-8') if isinstance(item, bytes) else item for item in data])
+    else:
+        return data
+import re
+
+def extract_model_name(file_path):
+    # Extract the filename from the path
+    base_name = os.path.basename(file_path)
+    
+    # Remove the file extension
+    name_without_extension = os.path.splitext(base_name)[0]
+    
+    # Define patterns to match
+    patterns = [
+        r'^(\w+)_embeddings$',  # matches "densenet121_embeddings"
+        r'^rad_(\w+)_embeddings$',  # matches "rad_densenet_embeddings"
+        r'^(\w+)$'  # fallback to match any word characters if above patterns fail
+    ]
+    
+    # Try each pattern
+    for pattern in patterns:
+        match = re.match(pattern, name_without_extension)
+        if match:
+            return match.group(1)
+    
+    # If no pattern matches, return the whole name without extension
+    return name_without_extension
+
+def prepare_image_for_display(img):
+    """Prepare the image for display, handling different formats without rotation."""
+    if img.shape[0] == 3 or img.shape[0] == 1:  # (C, H, W) format
+        img = np.transpose(img, (1, 2, 0))
+    
+    if img.shape[-1] == 1:  # Grayscale image
+        img = np.squeeze(img, axis=-1)
+    elif img.shape[-1] == 3:  # Color image
+        pass
+    else:
+        raise ValueError(f"Unexpected image shape: {img.shape}")
+    
+    # Normalize the image if it's not in 0-255 range
+    if img.max() <= 1.0:
+        img = (img * 255).astype(np.uint8)
+    
+    return img
+
+def find_and_plot_similar_images(embeddings_file, train_dataloader, val_dataloader, synth_dataloader, output_dir, plot_percentage=1.0, validation_percentage=1):
     if not 0 <= plot_percentage <= 1 or not 0 < validation_percentage <= 1:
         raise ValueError("plot_percentage and validation_percentage must be between 0 and 1")
 
@@ -1323,9 +1435,9 @@ def find_and_plot_similar_images(embeddings_file, train_dataloader, val_dataload
         train_standard_embeddings = f['train_standard/embeddings'][:]
         val_standard_embeddings = f['val_standard/embeddings'][:]
         synth_standard_embeddings = f['synth_standard/embeddings'][:]
-        train_image_ids = f['train_standard/image_ids'][:]
-        val_image_ids = f['val_standard/image_ids'][:]
-        synth_image_ids = f['synth_standard/image_ids'][:]
+        train_image_ids = decode_byte_strings(f['train_standard/image_ids'][:])
+        val_image_ids = decode_byte_strings(f['val_standard/image_ids'][:])
+        synth_image_ids = decode_byte_strings(f['synth_standard/image_ids'][:])
 
     print(f"Original shapes: train={train_standard_embeddings.shape}, val={val_standard_embeddings.shape}, synth={synth_standard_embeddings.shape}")
 
@@ -1370,7 +1482,7 @@ def find_and_plot_similar_images(embeddings_file, train_dataloader, val_dataload
     print(f"Number of images to plot: {num_images_to_plot}")
 
     # Create output directory
-    output_dir = os.path.join(output_dir, f'synthetic_similar_pairs_{plot_percentage:.2f}_validation_{validation_percentage:.2f}')
+    output_dir = os.path.join(output_dir, f'synthetic_similar_pairs_{plot_percentage:.2f}_validation_{validation_percentage:.2f}_{extract_model_name(embeddings_file)}')
     os.makedirs(output_dir, exist_ok=True)
 
     # Create sets of image IDs we need to load
@@ -1425,14 +1537,18 @@ def find_and_plot_similar_images(embeddings_file, train_dataloader, val_dataload
         if synth_img is None or real_img is None:
             print(f"Warning: Missing image for synthetic ID {synth_id} or {set_name} ID {real_id}")
             continue
+        
+        # Prepare images for display
+        synth_img = prepare_image_for_display(synth_img)
+        real_img = prepare_image_for_display(real_img)
 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
         
-        ax1.imshow(np.transpose(synth_img, (1, 2, 0)))
+        ax1.imshow(synth_img)
         ax1.set_title(f"Synthetic Image\nID: {synth_id}")
         ax1.axis('off')
 
-        ax2.imshow(np.transpose(real_img, (1, 2, 0)))
+        ax2.imshow(real_img)
         ax2.set_title(f"Most Similar {set_name} Image\nID: {real_id}")
         ax2.axis('off')
 

@@ -1,0 +1,37 @@
+submitit ERROR (2024-09-19 10:40:40,178) - Submitted job triggered an exception
+Traceback (most recent call last):
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/_submit.py", line 11, in <module>
+    submitit_main()
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 76, in submitit_main
+    process_job(args.folder)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 69, in process_job
+    raise error
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 55, in process_job
+    result = delayed.result()
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/utils.py", line 133, in result
+    self._result = self.function(*self.args, **self.kwargs)
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/main_distributed.py", line 68, in __call__
+    app_main(args=params, resume_preempt=resume_preempt)
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/src/train.py", line 363, in main
+    loss_meter.update(loss)
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/src/utils/logging.py", line 21, in gpu_timer
+    result = closure()
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/src/train.py", line 348, in train_step
+    scaler.update()
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/cuda/amp/grad_scaler.py", line 416, in step
+    retval = self._maybe_opt_step(optimizer, optimizer_state, *args, **kwargs)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/cuda/amp/grad_scaler.py", line 315, in _maybe_opt_step
+    retval = optimizer.step(*args, **kwargs)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/optim/optimizer.py", line 373, in wrapper
+    out = func(*args, **kwargs)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/optim/optimizer.py", line 76, in _use_grad
+    ret = func(self, *args, **kwargs)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/optim/adamw.py", line 173, in step
+    self._init_group(
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/optim/adamw.py", line 121, in _init_group
+    state["exp_avg"] = torch.zeros_like(
+torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 26.00 MiB. GPU 0 has a total capacty of 23.65 GiB of which 6.56 MiB is free. Process 774982 has 7.73 GiB memory in use. Including non-PyTorch memory, this process has 15.91 GiB memory in use. Of the allocated memory 13.92 GiB is allocated by PyTorch, and 309.71 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF

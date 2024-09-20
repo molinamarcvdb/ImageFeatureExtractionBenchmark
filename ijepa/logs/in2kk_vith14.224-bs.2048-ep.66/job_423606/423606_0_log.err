@@ -1,0 +1,29 @@
+submitit ERROR (2024-09-19 10:52:02,549) - Submitted job triggered an exception
+Traceback (most recent call last):
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/_submit.py", line 11, in <module>
+    submitit_main()
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 76, in submitit_main
+    process_job(args.folder)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 69, in process_job
+    raise error
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 55, in process_job
+    result = delayed.result()
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/utils.py", line 133, in result
+    self._result = self.function(*self.args, **self.kwargs)
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/main_distributed.py", line 68, in __call__
+    app_main(args=params, resume_preempt=resume_preempt)
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/src/train.py", line 156, in main
+    world_size, rank, local_rank = setup_distributed()
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/src/train.py", line 77, in setup_distributed
+    torch.cuda.set_device(local_rank)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/cuda/__init__.py", line 404, in set_device
+    torch._C._cuda_setDevice(device)
+RuntimeError: CUDA error: invalid device ordinal
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1.
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+

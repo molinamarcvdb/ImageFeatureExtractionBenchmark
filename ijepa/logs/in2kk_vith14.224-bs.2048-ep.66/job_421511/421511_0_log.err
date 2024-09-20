@@ -1,0 +1,32 @@
+[E socket.cpp:922] [c10d] The client socket has timed out after 1800s while trying to connect to (127.0.0.1, 29500).
+submitit ERROR (2024-09-19 11:22:02,148) - Submitted job triggered an exception
+Traceback (most recent call last):
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/_submit.py", line 11, in <module>
+    submitit_main()
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 76, in submitit_main
+    process_job(args.folder)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 69, in process_job
+    raise error
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 55, in process_job
+    result = delayed.result()
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/utils.py", line 133, in result
+    self._result = self.function(*self.args, **self.kwargs)
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/main_distributed.py", line 68, in __call__
+    app_main(args=params, resume_preempt=resume_preempt)
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/src/train.py", line 156, in main
+    world_size, rank, local_rank = setup_distributed()
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/src/train.py", line 80, in setup_distributed
+    torch.distributed.init_process_group(backend='nccl', init_method='env://')
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/distributed/c10d_logger.py", line 74, in wrapper
+    func_return = func(*args, **kwargs)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/distributed/distributed_c10d.py", line 1141, in init_process_group
+    store, rank, world_size = next(rendezvous_iterator)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/distributed/rendezvous.py", line 241, in _env_rendezvous_handler
+    store = _create_c10d_store(master_addr, master_port, rank, world_size, timeout)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/distributed/rendezvous.py", line 168, in _create_c10d_store
+    tcp_store = TCPStore(hostname, port, world_size, False, timeout)
+TimeoutError: The client socket has timed out after 1800s while trying to connect to (127.0.0.1, 29500).

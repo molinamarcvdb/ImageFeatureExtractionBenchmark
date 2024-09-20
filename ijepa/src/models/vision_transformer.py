@@ -5,6 +5,19 @@
 # LICENSE file in the root directory of this source tree.
 #
 
+import os
+import logging
+import sys
+# Get the current file's directory
+current_dir = os.path.dirname(__file__)
+
+# Get the first parent directory
+first_parent_dir = os.path.abspath(os.path.join(current_dir, os.pardir))
+
+# Get the second parent directory
+second_parent_dir = os.path.abspath(os.path.join(first_parent_dir, os.pardir))
+
+sys.path.append(second_parent_dir)
 import math
 from functools import partial
 import numpy as np
@@ -12,11 +25,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from src.utils.tensors import (
+from ijepa.src.utils.tensors import (
     trunc_normal_,
     repeat_interleave_batch
 )
-from src.masks.utils import apply_masks
+from ijepa.src.masks.utils import apply_masks
 
 
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):

@@ -1,0 +1,85 @@
+submitit ERROR (2024-09-19 10:18:26,037) - Submitted job triggered an exception
+Traceback (most recent call last):
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/_submit.py", line 11, in <module>
+    submitit_main()
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 76, in submitit_main
+    process_job(args.folder)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 69, in process_job
+    raise error
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/submission.py", line 55, in process_job
+    result = delayed.result()
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/submitit/core/utils.py", line 133, in result
+    self._result = self.function(*self.args, **self.kwargs)
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/main_distributed.py", line 68, in __call__
+    app_main(args=params, resume_preempt=resume_preempt)
+  File "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/ijepa/src/train.py", line 189, in main
+    target_encoder = copy.deepcopy(encoder)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 271, in _reconstruct
+    state = deepcopy(state, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 146, in deepcopy
+    y = copier(x, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 231, in _deepcopy_dict
+    y[deepcopy(key, memo)] = deepcopy(value, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 297, in _reconstruct
+    value = deepcopy(value, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 271, in _reconstruct
+    state = deepcopy(state, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 146, in deepcopy
+    y = copier(x, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 231, in _deepcopy_dict
+    y[deepcopy(key, memo)] = deepcopy(value, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 297, in _reconstruct
+    value = deepcopy(value, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 271, in _reconstruct
+    state = deepcopy(state, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 146, in deepcopy
+    y = copier(x, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 231, in _deepcopy_dict
+    y[deepcopy(key, memo)] = deepcopy(value, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 297, in _reconstruct
+    value = deepcopy(value, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 271, in _reconstruct
+    state = deepcopy(state, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 146, in deepcopy
+    y = copier(x, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 231, in _deepcopy_dict
+    y[deepcopy(key, memo)] = deepcopy(value, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 297, in _reconstruct
+    value = deepcopy(value, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 271, in _reconstruct
+    state = deepcopy(state, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 146, in deepcopy
+    y = copier(x, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 231, in _deepcopy_dict
+    y[deepcopy(key, memo)] = deepcopy(value, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 297, in _reconstruct
+    value = deepcopy(value, memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/copy.py", line 153, in deepcopy
+    y = copier(memo)
+  File "/home/ksamamov/miniconda3/envs/resshift/lib/python3.10/site-packages/torch/nn/parameter.py", line 58, in __deepcopy__
+    result = type(self)(self.data.clone(memory_format=torch.preserve_format), self.requires_grad)
+torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacty of 23.65 GiB of which 2.56 MiB is free. Process 774982 has 7.73 GiB memory in use. Process 858737 has 5.92 GiB memory in use. Process 3719331 has 5.92 GiB memory in use. Including non-PyTorch memory, this process has 4.08 GiB memory in use. Of the allocated memory 3.18 GiB is allocated by PyTorch, and 90.76 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF
