@@ -13,3 +13,4 @@ wandb
 .mypy_cache
 *.h5
 *.tar
+ijepa/logs/*
