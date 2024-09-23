@@ -255,13 +255,13 @@ def main():
                 model, device, train_loader, val_loader, synth_loader = load_best_model_for_inference(network_name, config)
 
                 # Perform inference and save embeddings
-                embeddings_file = inference_and_save_embeddings(model, device, train_loader,  val_loader, synth_loader, network_name, output_dir)
-                
+                embeddings_file = inference_and_save_embeddings(model, device, train_loader,  val_loader, synth_loader, network_name, output_dir, config)
+
                 # Compute MSD between train_standard and val_standard (baseline)
                 # and between train_adversarial and train_standard
                 if os.path.exists(embeddings_file):
                     print(f"Processing {network_name}")
-                    stats = compute_distances_and_plot(embeddings_file, output_dir, methods=['euclidean'])
+                    stats = compute_distances_and_plot(embeddings_file, output_dir, config, methods=['euclidean'])
                     find_and_plot_similar_images(embeddings_file, train_loader, val_loader, synth_loader, output_dir, plot_percentage=1)
                     
                     print(f"Statistics for {network_name}:")

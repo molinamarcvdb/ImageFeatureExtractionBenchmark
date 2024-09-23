@@ -17,18 +17,18 @@ seed: 42
 # List of networks to use for feature extraction
 networks:
   - 'rad_inception'
-  #- 'inception'
-  #- 'resnet50'
-  #- 'rad_resnet50'
-  #- 'inceptionresnet'
-  #- 'rad_inceptionresnet'
-  #- 'densenet121'
-  #- 'rad_densenet'
-  #- 'clip'
-  #- 'rad_clip'
-  #- 'rad_dino'
-  #- 'dino'
-  #- 'inception'
+  - 'inception'
+  - 'resnet50'
+  - 'rad_resnet50'
+  - 'inceptionresnet'
+  - 'rad_inceptionresnet'
+  - 'densenet121'
+  - 'rad_densenet'
+  - 'clip'
+  - 'rad_clip'
+  - 'rad_dino'
+  - 'dino'
+  - 'inception'
   #- 'ijepa'
 metrics:
   - fid
@@ -41,7 +41,7 @@ metrics:
   - mmd
 
 # Batch size for feature extraction
-batch_size: 50 
+batch_size: 64 
 inference_bs: 400
 # Number of sets to divide each dataset into
 num_sets: 10
@@ -62,7 +62,7 @@ do_z_score: false
 n_features: 768
 target_resolution: [224, 224]
 split_ratio: 0.8
-num_workers: 4 
+num_workers: 128
 pin_memory: true
 base_lr: 0.001
 n_epochs: 25
@@ -77,4 +77,5 @@ triplets_per_anchor: 'all'
 unfreeze_epoch: 0 
 downscaling_after_freezing: 10
 attentive_probing: False 
+augmentation_strength: 'strong' # or 'strong'
 

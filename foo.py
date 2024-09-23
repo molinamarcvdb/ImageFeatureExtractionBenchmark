@@ -2,6 +2,7 @@ import json
 import numpy as np
 import h5py
 from scipy.spatial.distance import cdist
+from scipy.stats import wasserstein_distance_nd, wasserstein_distance
 
 file_path = '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/checkpoints/20240919_072022_rad_inception/20240919_072022_rad_inception_image_paths.json'
 
@@ -42,9 +43,18 @@ with h5py.File(embeddings_file, 'r') as f:
     synth_image_ids = decode_byte_strings(f['synth_standard/image_ids'][:])
 
 train_val_distances = cdist(train_standard_embeddings, val_standard_embeddings, metric=method)
+
+synth_val_distances = cdist(synth_standard_embeddings, train_standard_embeddings, metric=method)
+
+#print('Wasserstein ND:', wasserstein_distance_nd(train_val_distances, synth_val_distances))
 print(train_val_distances.shape)
 print()
 min_val_distances = np.min(train_val_distances, axis=1)
+min_synth_distances = np.min(synth_val_distances, axis=1)
+print('Wasserstein 1D:', wasserstein_distance(min_val_distances, min_synth_distances))
+
+ndpctl = np.percentile(sorted(min_val_distances), 2)
+print('2ndpercentile', ndpctl)
 print(min_val_distances)
 print(min_val_distances.shape)
 print()

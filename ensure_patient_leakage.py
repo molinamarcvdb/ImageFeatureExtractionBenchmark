@@ -25,8 +25,8 @@ def create_train_val_split(
 
     # Get all image paths
     image_paths = []
-    for root, dirs, filenames in os.walk(patient_data_dir):
-        for file in filenames:
+    for root, dirs, filenames in sorted(os.walk(patient_data_dir)):
+        for file in sorted(filenames):
             if file.endswith((extension)):
                 image_paths.append(os.path.join(patient_data_dir, file))
 
@@ -37,19 +37,19 @@ def create_train_val_split(
     dfl = pl.from_pandas(df)
 
     # Group images by patient
-    patient_images = dfl.group_by(patient_id).agg(pl.col(unique_identifier_col).alias('image_list'))
+    patient_images = dfl.group_by(patient_id).agg(pl.col(unique_identifier_col).alias('image_list')).sort(by=patient_id)
     
     # Create dictionary of patient to image paths
     patient_to_images = defaultdict(list)
-    for patient, images in zip(patient_images[patient_id], patient_images['image_list']):
-        for image in images:
+    for patient, images in sorted(zip(patient_images[patient_id], patient_images['image_list'])):
+        for image in sorted(images):
             full_path = os.path.join(patient_data_dir, os.path.splitext(image)[0] + extension)
             if full_path in image_paths:
                 patient_to_images[patient].append(full_path)
 
     # Get the list of patients and shuffle it
-    patients = list(patient_to_images.keys())
-    random.shuffle(patients)
+    patients = sorted(list(patient_to_images.keys()))
+    random.Random(seed).shuffle(patients)
 
     train_paths: list[str] = []
     val_paths: list[str] = []

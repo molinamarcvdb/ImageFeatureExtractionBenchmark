@@ -9,7 +9,6 @@ from tensorflow.keras.applications.inception_resnet_v2 import preprocess_input a
 from tensorflow.keras.applications.densenet import preprocess_input as densenet_preprocess
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense
-from torch.utils.data import Dataset
 from utils import load_model_from_hub
 import re
 from collections import OrderedDict
@@ -31,6 +30,7 @@ from transformers import CLIPConfig
 import matplotlib.pyplot as plt
 from PIL import Image
 from torch.utils.data import Dataset
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision import transforms
 import random
 import glob
@@ -44,6 +44,8 @@ import json
 from sklearn.model_selection import train_test_split
 from networks import IJEPAEncoder
 from ijepa.infer import AttentivePooler
+from scipy.stats import wasserstein_distance
+import torch.distributed as dist
 
 class SiameseNetwork(nn.Module):
 
@@ -573,6 +575,16 @@ def setup_training(root_dir, network_name, **kwargs):
 
     # Set up device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Set up DistributedDataParallel
+
+    dist.init_process_group("nccl")
+    rank = dist.get_rank()
+    print(f"Start run basic DDP on rank: {rank}")
+
+    # Create modle and move it to gpu wiht rank id X
+    device = rank % torch.cuda.device_count()
+
+
     if 'clip' in network_name:
         config['batch_size'] = 64 # Define model
     try:
@@ -587,11 +599,9 @@ def setup_training(root_dir, network_name, **kwargs):
     target_res = (224, 224)
     if isinstance(model.backbone, models.Inception3):
         target_res = (299, 299)
-    
-    if config['multi_gpu']:
-        model = torch.nn.DataParallel(model)
-   
-    model.to(device)
+
+    model.to(device) 
+    model = DDP(model, device_ids = [device])
 
     # Generate timestamp
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -787,6 +797,8 @@ def setup_training(root_dir, network_name, **kwargs):
         })
 
     wandb.finish()
+    dist.destroy_process_group()
+
     return train_loader, val_loader, device
 
 def freeze_backbone(model):
@@ -891,6 +903,7 @@ def validate(model, val_loader, device, LossTr, config):
 
     return val_loss, pos_sim, neg_sim, neg_sim_aug
 
+
 def train_by_models(real_data_dir: str, network_names: list, **kwargs):
     """
     Train models using specified network architectures and configurations.
@@ -950,7 +963,7 @@ def load_best_model_for_inference(network_name, config, checkpoints_dir='./check
 
     # Move the model to GPU if available
     if config['multi_gpu']:
-        model = torch.nn.DataParallel(model)
+        model = DDP(model)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
@@ -1073,30 +1086,56 @@ def create_dataloaders(train_paths, val_paths, synthetic_paths, config):
     MANDATORY_TRANSFORMS = tio.Compose([
         tio.RescaleIntensity(out_min_max=(0, 1)),
     ])
+    if config['augmentation_strength'] == 'weak':
+        AUGMENTATION_TRANSFORMS = tio.Compose([
+            Custom2DRotation(degrees=20, p=0.7),
+            tio.RandomAffine(
+                degrees=(-0, 0),  # Reduced rotation range
+                scales=(0.8, 1.2),  # Reduced scaling range
+                default_pad_value='minimum',
+                p=0.5
+            ),
+            tio.RandomFlip(axes=(2), flip_probability=0.5),
+            tio.RandomFlip(axes=(1), flip_probability=0.5),
+            tio.RandomBiasField(
+                coefficients=0.3,  # Reduced coefficient for less intense bias field
+                order=3,
+                p=0.4
+            ),
+            tio.RandomGamma(
+                log_gamma=(-0.1, 0.1),  # Reduced range for less intense gamma correction
+                p=0.4
+            ),
+            tio.RandomNoise(std=(0, 0.05), p=0.3),  # Added some noise for texture
+            tio.RandomBlur(std=(0, 1), p=0.2),  # Added slight blur for realism
+            tio.RandomMotion(degrees=5, translation=5, p=0.2),
+        ])
+    elif config['augmentation_strength'] == 'strong':
+        
+        AUGMENTATION_TRANSFORMS = tio.Compose([
+            Custom2DRotation(degrees=20, p=1),
+            tio.RandomAffine(
+                degrees=(-0, 0),  # Reduced rotation range
+                scales=(0.6, 1.4),  # Reduced scaling range
+                default_pad_value='minimum',
+                p=1
+            ),
+            tio.RandomFlip(axes=(2), flip_probability=0.6),
+            tio.RandomFlip(axes=(1), flip_probability=0.6),
+            tio.RandomBiasField(
+                coefficients=0.3,  # Reduced coefficient for less intense bias field
+                order=3,
+                p=0.8
+            ),
+            tio.RandomGamma(
+                log_gamma=(-0.1, 0.1),  # Reduced range for less intense gamma correction
+                p=0.8
+            ),
+            tio.RandomNoise(std=(0, 0.05), p=0.8),  # Added some noise for texture
+            tio.RandomBlur(std=(0, 1), p=0.8),  # Added slight blur for realism
+            tio.RandomMotion(degrees=5, translation=5, p=0.7),
+        ])
 
-    AUGMENTATION_TRANSFORMS = tio.Compose([
-        Custom2DRotation(degrees=20, p=0.7),
-        tio.RandomAffine(
-            degrees=(-0, 0),  # Reduced rotation range
-            scales=(0.8, 1.2),  # Reduced scaling range
-            default_pad_value='minimum',
-            p=0.5
-        ),
-        tio.RandomFlip(axes=(2), flip_probability=0.5),
-        tio.RandomFlip(axes=(1), flip_probability=0.5),
-        tio.RandomBiasField(
-            coefficients=0.3,  # Reduced coefficient for less intense bias field
-            order=3,
-            p=0.4
-        ),
-        tio.RandomGamma(
-            log_gamma=(-0.1, 0.1),  # Reduced range for less intense gamma correction
-            p=0.4
-        ),
-        tio.RandomNoise(std=(0, 0.05), p=0.3),  # Added some noise for texture
-        tio.RandomBlur(std=(0, 1), p=0.2),  # Added slight blur for realism
-        tio.RandomMotion(degrees=5, translation=5, p=0.2),
-    ])
 
     # Combine mandatory and augmentation transforms for training
     TRAIN_TRANSFORMS = tio.Compose([
@@ -1105,7 +1144,7 @@ def create_dataloaders(train_paths, val_paths, synthetic_paths, config):
     ])
 
     # Validation only uses mandatory transforms
-    VAL_TRANSFORMS = MANDATORY_TRANSFORMS
+    VAL_TRANSFORMS = TRAIN_TRANSFORMS
 
     # Ensure target_res is 3D
     target_res = config['target_resolution']
@@ -1167,7 +1206,7 @@ def create_dataloaders(train_paths, val_paths, synthetic_paths, config):
 
     return train_loader, val_loader, synth_loader
 
-def inference_and_save_embeddings(model, device, train_standard_loader, val_standard_loader, synth_loader, network_name, output_dir):
+def inference_and_save_embeddings(model, device, train_standard_loader, val_standard_loader, synth_loader, network_name, output_dir, config):
     model.eval()
     os.makedirs(output_dir, exist_ok=True)
 
@@ -1202,19 +1241,22 @@ def inference_and_save_embeddings(model, device, train_standard_loader, val_stan
 
         return np.vstack(embeddings), image_ids
     try:
-        print('Proccessing standard')
+        print('Proccessing train standard')
         train_standard_embeddings, train_standard_ids = process_dataloader(train_standard_loader, "train_standard", model, device)
         print()
-        print('Processing adversarial')
+        print('Processing train adversarial')
         train_adversarial_embeddings, train_adversarial_ids = process_dataloader(train_standard_loader, "train_adversarial", model, device, adversarial = True)
         print()
         print('Processing val')
         val_standard_embeddings, val_standard_ids = process_dataloader(val_standard_loader, "val_standard", model, device)
         print()
+        print('Processing val adversarial')
+        val_adversarial_embeddings, val_adversarial_ids = process_dataloader(val_standard_loader, "val_adversarial", model, device, adversarial = True)
+        print()
         print('Processing synthetic')
         synth_standard_embeddings, synth_standard_ids = process_dataloader(synth_loader, "synth_standard", model, device)
 
-        output_file = os.path.join(output_dir, f"{network_name}_embeddings.h5")
+        output_file = os.path.join(output_dir, f"{network_name}_embeddings_aug_{config['augmentation_strength']}.h5")
         with h5py.File(output_file, 'w') as f:
             f.create_dataset('train_standard/embeddings', data=train_standard_embeddings)
             f.create_dataset('train_standard/image_ids', data=np.array(train_standard_ids, dtype=h5py.special_dtype(vlen=str)))
@@ -1224,6 +1266,9 @@ def inference_and_save_embeddings(model, device, train_standard_loader, val_stan
 
             f.create_dataset('val_standard/embeddings', data=val_standard_embeddings)
             f.create_dataset('val_standard/image_ids', data=np.array(val_standard_ids, dtype=h5py.special_dtype(vlen=str)))
+            
+            f.create_dataset('val_adversarial/embeddings', data=val_adversarial_embeddings)
+            f.create_dataset('val_adversarial/image_ids', data=np.array(val_adversarial_ids, dtype=h5py.special_dtype(vlen=str)))
 
             f.create_dataset('synth_standard/embeddings', data=synth_standard_embeddings)
             f.create_dataset('synth_standard/image_ids', data=np.array(synth_standard_ids, dtype=h5py.special_dtype(vlen=str)))
@@ -1253,17 +1298,19 @@ def compute_spearman_correlation(X, Y):
     Y_ranked = rank_data(Y)
     return compute_pearson_correlation(X_ranked, Y_ranked)
 
-def compute_distances_and_plot(embeddings_file, output_dir, methods='euclidean'):
+def compute_distances_and_plot(embeddings_file, output_dir, config, methods='euclidean'):
     print(f"Loading embeddings from {embeddings_file}")
     with h5py.File(embeddings_file, 'r') as f:
         train_standard_embeddings = f['train_standard/embeddings'][:]
         train_adversarial_embeddings = f['train_adversarial/embeddings'][:]
         val_standard_embeddings = f['val_standard/embeddings'][:]
+        val_adversarial_embeddings = f['val_adversarial/embeddings'][:]
         synth_standard_embeddings = f['synth_standard/embeddings'][:]
 
     print(f"Shapes: train_standard={train_standard_embeddings.shape}, "
           f"train_adversarial={train_adversarial_embeddings.shape}, "
           f"val_standard={val_standard_embeddings.shape}, "
+          f"val_adversarial={val_adversarial_embeddings.shape}, "
           f"synth_standard={synth_standard_embeddings.shape}")
 
     if isinstance(methods, str):
@@ -1278,19 +1325,23 @@ def compute_distances_and_plot(embeddings_file, output_dir, methods='euclidean')
             print(f"Computing {method} distances")
             train_val_distances = cdist(train_standard_embeddings, val_standard_embeddings, metric=method)
             adversarial_train_distances = cdist(train_adversarial_embeddings, train_standard_embeddings, metric=method)
+            adversarial_val_distances = cdist(val_adversarial_embeddings, val_standard_embeddings, metric=method)
             synth_train_distances = cdist(synth_standard_embeddings, train_standard_embeddings, metric=method)
 
             min_train_val_distances = np.min(train_val_distances, axis=1)
             min_adversarial_train_distances = np.min(adversarial_train_distances, axis=1)
+            min_adversarial_val_distances = np.min(adversarial_val_distances, axis=1)
             min_synth_train_distances = np.min(synth_train_distances, axis=1)
 
             print(f"Distance shapes: train_val={min_train_val_distances.shape}, "
                   f"adversarial_train={min_adversarial_train_distances.shape}, "
+                  f"adversarial_val={min_adversarial_val_distances.shape}, "
                   f"synth_train={min_synth_train_distances.shape}")
 
             results[method] = {
                 'train_val': min_train_val_distances,
                 'adversarial_train': min_adversarial_train_distances,
+                'adversarial_val': min_adversarial_val_distances,
                 'synth_train': min_synth_train_distances
             }
 
@@ -1300,21 +1351,72 @@ def compute_distances_and_plot(embeddings_file, output_dir, methods='euclidean')
             if method == 'pearson':
                 train_val_corr = compute_pearson_correlation(train_standard_embeddings, val_standard_embeddings)
                 adversarial_train_corr = compute_pearson_correlation(train_adversarial_embeddings, train_standard_embeddings)
+                adversarial_val_corr = compute_pearson_correlation(val_adversarial_embeddings, val_standard_embeddings)
                 synth_train_corr = compute_pearson_correlation(synth_standard_embeddings, train_standard_embeddings)
             elif method == 'spearman':
                 train_val_corr = compute_spearman_correlation(train_standard_embeddings, val_standard_embeddings)
                 adversarial_train_corr = compute_spearman_correlation(train_adversarial_embeddings, train_standard_embeddings)
+                adversarial_val_corr = compute_spearman_correlation(val_adversarial_embeddings, val_standard_embeddings)
                 synth_train_corr = compute_spearman_correlation(synth_standard_embeddings, train_standard_embeddings)
 
             print(f"Correlation shapes: train_val={train_val_corr.shape}, "
                   f"adversarial_train={adversarial_train_corr.shape}, "
+                  f"adversarial_val={adversarial_val_corr.shape}, "
                   f"synth_train={synth_train_corr.shape}")
 
             results[method] = {
                 'train_val': train_val_corr,
                 'adversarial_train': adversarial_train_corr,
+                'adversarial_val': adversarial_val_corr,
                 'synth_train': synth_train_corr
             }
+    # Selected how many copy candidates are found
+    method = methods[0]
+    ndpctl = np.percentile(results[method]['train_val'], 2)
+    ndpctl_high = np.percentile(results[method]['train_val'], 98) 
+
+    adv_train_detection_count = 0
+    adv_val_detection_count = 0 
+
+    total_adv_train = len(results[method]['adversarial_train'])
+    total_adv_val = len(results[method]['adversarial_val'])
+
+    for dist in results[method]['adversarial_train']:
+        if method in ['euclidean', 'sqeuclidean']:
+            if dist < ndpctl:
+                adv_train_detection_count += 1
+        else:
+
+            if dist > ndpctl_high:
+                adv_train_detection_count += 1
+
+    for dist in results[method]['adversarial_val']:
+        if method in ['euclidean', 'sqeuclidean']:
+            if dist < ndpctl:
+                adv_val_detection_count += 1
+        else:
+            if dist > ndpctl_high:
+                adv_val_detection_count += 1
+
+    dist_trval_synth = wasserstein_distance(results[method]['synth_train'], results[method]['train_val'])
+    dist_adv_train_trval = wasserstein_distance(results[method]['adversarial_train'], results[method]['train_val'])
+    dist_adv_val_trval = wasserstein_distance(results[method]['adversarial_val'], results[method]['train_val'])
+    
+    detected_adv_train_pct = adv_train_detection_count / total_adv_train
+    detected_adv_val_pct = adv_val_detection_count / total_adv_val
+    
+    adv_results = {
+            'wasserstein_1d_train_val_train_synth': dist_trval_synth,
+            'wasserstein_1d_train_val_train_train_adv': dist_adv_train_trval,
+            'wasserstein_1d_train_val_train_val_adv': dist_adv_val_trval,
+            'detection_ratio_train': detected_adv_train_pct,
+            'detection_ratio_val': detected_adv_val_pct
+            }
+
+    json_file_path = os.path.join(output_dir, os.path.basename(embeddings_file).replace('.h5', f"aug_{config['augmentation_strength']}_results.json"))
+
+    with open(json_file_path, 'w') as json_file:
+        json.dump(adv_results, json_file)
 
     print("\nPlotting results")
     n_methods = len(methods)
@@ -1325,7 +1427,7 @@ def compute_distances_and_plot(embeddings_file, output_dir, methods='euclidean')
 
     for ax, (method, data) in zip(axs, results.items()):
         print(f"Plotting for method: {method}")
-        for key in ['train_val', 'adversarial_train', 'synth_train']:
+        for key in ['train_val', 'adversarial_train', 'adversarial_val', 'synth_train']:
             valid_data = data[key][~np.isnan(data[key]) & ~np.isinf(data[key])]
             print(f"{key}: {len(valid_data)} valid data points")
             if len(valid_data) > 0:
@@ -1341,11 +1443,8 @@ def compute_distances_and_plot(embeddings_file, output_dir, methods='euclidean')
         ax.tick_params(axis='both', which='major', labelsize=10)
 
         # Add a text box with statistics
-        stats_text = "\n".join([f"{key.replace('_', ' ').title()}:\nMean: {np.mean(data[key]):.4f}\nMedian: {np.median(data[key]):.4f}" for key in data.keys()])
-        ax.text(0.95, 0.95, stats_text, transform=ax.transAxes, fontsize=10, verticalalignment='top', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
     plt.tight_layout()
-    plot_file = os.path.join(output_dir, os.path.basename(embeddings_file).replace('.h5', f'_{"-".join(methods)}_distribution.png'))
+    plot_file = os.path.join(output_dir, os.path.basename(embeddings_file).replace('.h5', f"_aug_{config['augmentation_strength']}_{'-'.join(methods)}_distribution.png"))
     plt.savefig(plot_file, bbox_inches='tight')
     plt.close()
     print(f"Distribution plot saved to {plot_file}")
