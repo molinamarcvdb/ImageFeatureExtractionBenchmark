@@ -15,3 +15,4 @@ wandb
 *.tar
 ijepa/logs/*
 *.npy
+*.png
