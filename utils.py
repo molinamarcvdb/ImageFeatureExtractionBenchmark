@@ -16,6 +16,102 @@ def load_jsonl(file_path):
     with open(file_path, 'r') as file:
         for line in file:
             yield json.loads(line)
+
+import os
+import numpy as np
+from PIL import Image
+from tqdm import tqdm
+import shutil
+
+def convert_to_npy(input_paths, output_dir, shape):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    expected_npy_files = [os.path.splitext(os.path.basename(path))[0] + '.npy' for path in input_paths]
+    existing_npy_files = [f for f in os.listdir(output_dir) if f.endswith('.npy')]
+    
+    if set(expected_npy_files) == set(existing_npy_files):
+        print("All files already converted. Skipping conversion.")
+        return [os.path.join(output_dir, f) for f in existing_npy_files]
+    
+    # If mismatch, clear the output directory and perform conversion
+    print("Mismatch in files. Clearing output directory and performing conversion.")
+    shutil.rmtree(output_dir)
+    os.makedirs(output_dir)
+    
+    new_paths = []
+    file_sizes = []
+
+    for input_path in tqdm(input_paths):
+        if input_path.endswith((".png", ".jpeg", ".jpg", ".tiff")):
+            # Open the image file
+            img = Image.open(input_path)
+# Resize the image
+            img_resized = img.resize((shape[1], shape[0]), Image.LANCZOS)
+            # Convert to numpy array
+            img_array = np.array(img_resized)
+            # Create output filename
+            base_name = os.path.basename(input_path)
+            npy_filename = os.path.splitext(base_name)[0] + '.npy'
+            output_path = os.path.join(output_dir, npy_filename)
+            
+            # Save as NPY file
+            np.save(output_path, img_array)
+            
+            # Verify file size
+            file_size = os.path.getsize(output_path)
+            file_sizes.append(file_size)
+            
+            new_paths.append(output_path)
+
+    # Check if all file sizes are the same
+    if len(set(file_sizes)) == 1:
+        print(f"Warning: All converted files have the same size of {file_sizes[0]} bytes.")
+    else:
+        print(f"File sizes vary. Min: {min(file_sizes)}, Max: {max(file_sizes)}, Average: {sum(file_sizes)/len(file_sizes)}")
+
+    # Verify that files can be loaded
+    #for path in new_paths:
+    #    try:
+    #        loaded_array = np.load(path, mmap_mode='r')
+    #        if loaded_array.shape != shape:
+    #            print(f"Warning: Shape mismatch in {path}. Expected {shape}, got {loaded_array.shape}")
+    #    except Exception as e:
+    #        print(f"Error loading {path}: {str(e)}")
+
+    return new_paths
+
+class MultiEpochsDataLoader(torch.utils.data.DataLoader):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._DataLoader__initialized = False
+        self.batch_sampler = _RepeatSampler(self.batch_sampler)
+        self._DataLoader__initialized = True
+        self.iterator = super().__iter__()
+
+    def __len__(self):
+        return len(self.batch_sampler.sampler)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield next(self.iterator)
+
+
+class _RepeatSampler(object):
+    """ Sampler that repeats forever.
+    Args:
+        sampler (Sampler)
+    """
+
+    def __init__(self, sampler):
+        self.sampler = sampler
+
+    def __iter__(self):
+        while True:
+            yield from iter(self.sampler)
+
+
 # Link azure to local path and group answers
 def link_azure_local(jsonl_paths):
     """

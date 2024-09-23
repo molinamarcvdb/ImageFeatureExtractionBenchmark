@@ -14,3 +14,4 @@ wandb
 *.h5
 *.tar
 ijepa/logs/*
+*.npy

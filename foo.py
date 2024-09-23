@@ -1,107 +1,128 @@
+import torch
 import json
 import numpy as np
-import h5py
-from scipy.spatial.distance import cdist
-from scipy.stats import wasserstein_distance_nd, wasserstein_distance
-
-file_path = '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/checkpoints/20240919_072022_rad_inception/20240919_072022_rad_inception_image_paths.json'
-
-
-with open(file_path, 'r') as fh:
-    trval_js = json.load(fh)
-
-
-train_paths = trval_js['train_paths']
-val_paths = trval_js['val_paths']
-
-
-
-from privacy_benchmark import compute_distances_and_plot
-
-def decode_byte_strings(data):
-    if isinstance(data, bytes):
-        return data.decode('utf-8')
-    elif isinstance(data, np.ndarray):
-        return np.array([item.decode('utf-8') if isinstance(item, bytes) else item for item in data])
-    else:
-        return data
-
-
-embeddings_file = '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/embeddings/rad_dino_embeddings.h5'
-method = 'sqeuclidean'
-
-print(f"Loading embeddings from {embeddings_file}")
-
-with h5py.File(embeddings_file, 'r') as f:
-
-    train_standard_embeddings = f['train_standard/embeddings'][:]
-    train_adversarial_embeddings = f['train_adversarial/embeddings'][:]
-    val_standard_embeddings = f['val_standard/embeddings'][:]
-    synth_standard_embeddings = f['synth_standard/embeddings'][:]
-    train_image_ids = decode_byte_strings(f['train_standard/image_ids'][:])
-    val_image_ids = decode_byte_strings(f['val_standard/image_ids'][:])
-    synth_image_ids = decode_byte_strings(f['synth_standard/image_ids'][:])
-
-train_val_distances = cdist(train_standard_embeddings, val_standard_embeddings, metric=method)
-
-synth_val_distances = cdist(synth_standard_embeddings, train_standard_embeddings, metric=method)
-
-#print('Wasserstein ND:', wasserstein_distance_nd(train_val_distances, synth_val_distances))
-print(train_val_distances.shape)
-print()
-min_val_distances = np.min(train_val_distances, axis=1)
-min_synth_distances = np.min(synth_val_distances, axis=1)
-print('Wasserstein 1D:', wasserstein_distance(min_val_distances, min_synth_distances))
-
-ndpctl = np.percentile(sorted(min_val_distances), 2)
-print('2ndpercentile', ndpctl)
-print(min_val_distances)
-print(min_val_distances.shape)
-print()
-
-most_similar_val_indices = np.argmin(train_val_distances, axis=1)
-print(most_similar_val_indices)
-print(most_similar_val_indices.shape)
-print()
-
-sorted_indices = np.argsort(min_val_distances)
-print(sorted_indices)
-val_ids_to_load = val_image_ids[most_similar_val_indices]
-
-import matplotlib.pyplot as plt
-from PIL import Image
 import os
+from time import time
+import torchio as tio
+from torch.utils.data import DataLoader, RandomSampler
 
-def compare_images(path1, path2, distance):
-    # Open the images
-    img1 = Image.open(path1)
-    img2 = Image.open(path2)
+MANDATORY_TRANSFORMS = tio.Compose([
+    tio.RescaleIntensity(out_min_max=(0, 1)),
+])
 
-    # Create a figure with two subplots side by side
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+json_path = '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/checkpoints/20240923_103236_rad_inception/20240923_103236_rad_inception_image_paths.json'
+target_res = (224, 224, 1)
 
-    # Display the first image
-    ax1.imshow(img1)
-    ax1.set_title('Image 1')
-    ax1.axis('off')  # Hide the axis
+class ContrastiveDataset(torch.utils.data.Dataset):
+    def __init__(self, file_paths, target_resolution, transforms, num_channels=3):
+        self.paths = file_paths
+        self.target_resolution = target_resolution
+        self.transforms = transforms
+        self.resolution_transform = tio.Resize(target_resolution)
+        self.num_channels = num_channels
 
-    # Display the second image
-    ax2.imshow(img2)
-    ax2.set_title('Image 2')
-    ax2.axis('off')  # Hide the axis
+        self.dummy_image  = torch.rand(1, *target_resolution)
 
-    # Adjust the layout and display the plot
-    plt.tight_layout()
-    plt.savefig(os.path.join('/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/images_possibly_same_patients', os.path.basename(path1) + '_' + os.path.basename(path2) + f'{distance}.png'))
+    def __len__(self):
+        return len(self.paths)
 
-case_dir = '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/output_images_512_all'
+    def process_image(self, img_path, aug=False):
+        img = tio.ScalarImage(tensor = self.dummy_image)
 
-for i, err_idx in enumerate(sorted_indices):
-    train_id = train_image_ids[err_idx]    
-    val_idx = most_similar_val_indices[err_idx]
-    val_img = val_image_ids[val_idx]
-    distance = min_val_distances[err_idx]
+        # Apply resolution transform
+        img = self.resolution_transform(img)
 
-    if distance <10:
-        compare_images(os.path.join(case_dir, train_id), os.path.join(case_dir, val_img), distance)
-    
+        # Apply other transforms
+        if aug:
+            img = self.transforms(img)
+        else:
+            mandatory_aug = tio.Compose([
+                tio.RescaleIntensity(out_min_max=(0, 1)),
+            ])
+            img = mandatory_aug(img)
+
+        # Get the data tensor and remove the extra dimension
+        img_data = img.data.squeeze()
+
+        # Ensure the tensor is in the format (3, H, W)
+        if img_data.ndim == 2:  # If the image is 2D (H, W)
+            img_data = img_data.unsqueeze(0).repeat(3, 1, 1)  # Add channel dimension and repeat to 3 channels
+        elif img_data.ndim == 3:
+            if img_data.shape[0] == 1:
+                img_data = img_data.repeat(3, 1, 1)  # Repeat single channel to 3 channels
+            elif img_data.shape[0] == 3:
+                pass  # Already in the correct format
+            elif img_data.shape[2] == 3:
+                img_data = img_data.permute(2, 0, 1)  # Permute from (H, W, C) to (C, H, W)
+            else:
+                raise ValueError(f"Unexpected channel configuration: {img_data.shape}")
+        else:
+            raise ValueError(f"Unexpected number of dimensions: {img_data.ndim}")
+
+        # Ensure the image has 3 channels
+        assert img_data.shape[0] == 3, f"Image should have 3 channels, but has shape {img_data.shape}"
+
+        return img_data 
+
+    def __getitem__(self, index):
+        img = self.process_image(self.paths[index])
+        img_pos = self.process_image(self.paths[index], aug = True)  # Same image, different augmentation
+        # Get a negative sample
+        index_neg = np.random.choice(np.delete(np.arange(len(self.paths)), index))
+        img_neg = self.process_image(self.paths[index_neg])
+
+        label = np.nan  # or implement your label logic here
+        img_id = os.path.basename(self.paths[index])
+
+        return {
+            'data': img,
+            'data_pos': img_pos,
+            'data_neg': img_neg,
+            'cond': label,
+            'path': self.paths[index],
+            'img_id': img_id
+        }
+def load_image_paths(json_path):
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    return data['train_paths'], data['val_paths']
+
+train_paths, val_paths = load_image_paths(json_path)
+
+train_dataset = ContrastiveDataset(
+    file_paths=train_paths,
+    target_resolution=target_res,
+    transforms=MANDATORY_TRANSFORMS,
+    num_channels=3
+)
+
+# Create a RandomSampler
+train_sampler = RandomSampler(train_dataset)
+
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=32,
+    sampler=train_sampler,  # Use the RandomSampler instead of shuffle
+    num_workers=8,
+    pin_memory=True,
+    persistent_workers=True,
+)
+
+# Warm-up loop
+print("Warming up...")
+warm_up_loader = DataLoader(
+    train_dataset,
+    batch_size=1,
+    num_workers=1,
+    shuffle=False,
+)
+for _ in warm_up_loader:
+    break
+
+print("Starting main loop...")
+start_time = time()
+for i, batch in enumerate(train_loader):
+    # Process your batch here
+    end_time = time()
+    print(f"Batch {i+1} loading time: {end_time - start_time:.4f} seconds")
+    start_time = time()  # Reset start_time for the next iteration

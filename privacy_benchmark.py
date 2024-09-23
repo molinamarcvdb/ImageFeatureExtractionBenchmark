@@ -31,6 +31,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from torch.utils.data import Dataset
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 from torchvision import transforms
 import random
 import glob
@@ -46,6 +47,15 @@ from networks import IJEPAEncoder
 from ijepa.infer import AttentivePooler
 from scipy.stats import wasserstein_distance
 import torch.distributed as dist
+import sys
+import traceback
+import logging
+
+def setup_logging(dire):
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_filename = os.path.join(dire,  f'error_{timestamp}.err.log')
+    logging.basicConfig(filename=log_filename, level=logging.ERROR,
+                        format='%(asctime)s - %(levelname)s - %(message)s')
 
 class SiameseNetwork(nn.Module):
 
@@ -256,10 +266,10 @@ class ContrastiveNetwork(nn.Module):
         
         if hasattr(self.backbone, 'config') and isinstance(self.backbone.config, CLIPConfig):
 
-            features = self._get_features(self.backbone.vision_model(x.to(self.device)))
+            features = self._get_features(self.backbone.vision_model(x.to(self.device))).to(self.device)
         
         else:
-            features = self._get_features(self.backbone(x.to(self.device)))
+            features = self._get_features(self.backbone(x.to(self.device))).to(self.device)
 
         if self.attentive_probing:
             if len(features.shape) == 2:
@@ -411,7 +421,24 @@ class ContrastiveDataset(torch.utils.data.Dataset):
         return len(self.paths)
 
     def process_image(self, img_path, aug=False):
-        img = tio.ScalarImage(img_path)
+
+        img = np.load(img_path, mmap_mode='r+')
+# Convert to PyTorch tensor
+        img = torch.from_numpy(img).float().permute(2, 1, 0).unsqueeze(0)
+
+        # Ensure the tensor is in the format (C, H, W)
+        if img.ndim == 2:  # If the image is 2D (H, W)
+            img = img.unsqueeze(0).repeat(3, 1, 1)  # Add channel dimension and repeat to 3 channels
+        elif img.ndim == 3:
+            if img.shape[2] == 3:
+                img = img.permute(2, 0, 1)  # Permute from (H, W, C) to (C, H, W)
+            elif img.shape[0] != 3:
+                img = img.repeat(3, 1, 1)  # Repeat single channel to 3 channels
+        
+        # Add a dummy 'z' dimension to make it 4D (C, H, W, Z)
+        
+        # Convert to ScalarImage for TorchIO transforms
+        img = tio.ScalarImage(tensor=img)
 
         # Apply resolution transform
         img = self.resolution_transform(img)
@@ -425,28 +452,13 @@ class ContrastiveDataset(torch.utils.data.Dataset):
             ])
             img = mandatory_aug(img)
 
-        # Get the data tensor and remove the extra dimension
-        img_data = img.data.squeeze()
-
-        # Ensure the tensor is in the format (3, H, W)
-        if img_data.ndim == 2:  # If the image is 2D (H, W)
-            img_data = img_data.unsqueeze(0).repeat(3, 1, 1)  # Add channel dimension and repeat to 3 channels
-        elif img_data.ndim == 3:
-            if img_data.shape[0] == 1:
-                img_data = img_data.repeat(3, 1, 1)  # Repeat single channel to 3 channels
-            elif img_data.shape[0] == 3:
-                pass  # Already in the correct format
-            elif img_data.shape[2] == 3:
-                img_data = img_data.permute(2, 0, 1)  # Permute from (H, W, C) to (C, H, W)
-            else:
-                raise ValueError(f"Unexpected channel configuration: {img_data.shape}")
-        else:
-            raise ValueError(f"Unexpected number of dimensions: {img_data.ndim}")
-
+        # Get the data tensor and remove the extra 'z' dimension
+        img_data = img.data.squeeze(-1)
+        if img_data.shape[0] != 3:
+            img_data = img_data.repeat(3, 1, 1)
         # Ensure the image has 3 channels
-        assert img_data.shape[0] == 3, f"Image should have 3 channels, but has shape {img_data.shape}"
 
-        return img_data 
+        return img_data
 
     def __getitem__(self, index):
         img = self.process_image(self.paths[index])
@@ -576,10 +588,11 @@ def setup_training(root_dir, network_name, **kwargs):
     # Set up device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # Set up DistributedDataParallel
-
-    dist.init_process_group("nccl")
-    rank = dist.get_rank()
-    print(f"Start run basic DDP on rank: {rank}")
+    local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
+    rank = int(os.environ["LOCAL_RANK"])
+    dist.init_process_group("nccl", rank=rank, world_size=local_world_size)
+    
+    print(f"Start run basic DDP on rank: {rank} and world size: {local_world_size}")
 
     # Create modle and move it to gpu wiht rank id X
     device = rank % torch.cuda.device_count()
@@ -601,8 +614,8 @@ def setup_training(root_dir, network_name, **kwargs):
         target_res = (299, 299)
 
     model.to(device) 
-    model = DDP(model, device_ids = [device])
-
+    model = DDP(model, device_ids = [device], output_device=rank, broadcast_buffers=False)
+    
     # Generate timestamp
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
@@ -684,7 +697,12 @@ def setup_training(root_dir, network_name, **kwargs):
         target_res = (*target_res, 1)
     
     num_channels = 3    # Create separate datasets for train and validation
-
+    
+    from utils import convert_to_npy
+    
+    train_paths = convert_to_npy(train_paths, os.path.join(config['output_preprocessing'], 'train'), target_res)
+    val_paths = convert_to_npy(val_paths, os.path.join(config['output_preprocessing'], 'val'), target_res)
+    
     train_dataset = ContrastiveDataset(
         file_paths=train_paths,
         target_resolution=target_res,
@@ -699,26 +717,48 @@ def setup_training(root_dir, network_name, **kwargs):
         num_channels=num_channels
     )
 
+    train_sampler = DistributedSampler(train_dataset, num_replicas=local_world_size, rank=rank, shuffle = False, drop_last = False)
+    val_sampler = DistributedSampler(val_dataset, num_replicas=local_world_size, rank=rank, shuffle = False, drop_last = False) 
+
     # Create DataLoaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
-        shuffle=True,
-        num_workers=config['num_workers'],
-        pin_memory=config['pin_memory'],
-        persistent_workers=True
-    )
-    
-    visualize_augmentations_contrastive(train_loader, num_images=4, num_augmentations=3)
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['batch_size'],
         shuffle=False,
         num_workers=config['num_workers'],
         pin_memory=config['pin_memory'],
-        persistent_workers=True
+        persistent_workers=True,
+        sampler=train_sampler
     )
+    from utils import MultiEpochsDataLoader
+
+    loader_args = dict(
+            batch_size=config['batch_size'],
+            shuffle=False,
+            num_workers=config['num_workers'],
+            pin_memory=config['pin_memory'],
+            persistent_workers=True,
+            sampler=train_sampler
+            )
+
+    train_loader = MultiEpochsDataLoader(
+            train_dataset,
+            **loader_args 
+            )
+    
+    loader_args = dict(
+            batch_size=config['batch_size'],
+            shuffle=False,
+            num_workers=config['num_workers'],
+            pin_memory=config['pin_memory'],
+            persistent_workers=True,
+            sampler=val_sampler
+            )
+
+    val_loader = MultiEpochsDataLoader(
+            val_dataset,
+            **loader_args 
+            )
 
     # Save paths to JSON file
     paths_dict = {
@@ -753,51 +793,58 @@ def setup_training(root_dir, network_name, **kwargs):
     # Training loop
     val_losses = []
 
-    # Freeze the backbone initially
-    freeze_backbone(model)
-    
-    print('Starting training')    
-    for epoch in range(config['n_epochs']):
-
-        if epoch == config['unfreeze_epoch']:
-            print(f"Unfreezing the entire network at epoch {epoch}")
-            unfreeze_backbone(model)
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['n_epochs'], eta_min=config['base_lr']/config['downscaling_after_freezing'])
-
-        epoch_loss = train_epoch(config['batch_size'], model, train_loader, optimizer, scheduler, device, LossTr, epoch, config)
-
-        val_loss, pos_sim, neg_sim, neg_sim_aug = validate(model, val_loader, device, LossTr, config)
-
+    try:
+        # Freeze the backbone initially
+        freeze_backbone(model)
         
-        val_losses.append(val_loss)
+        print('Starting training')    
+        for epoch in range(config['n_epochs']):
+
+            if epoch == config['unfreeze_epoch']:
+                print(f"Unfreezing the entire network at epoch {epoch}")
+                unfreeze_backbone(model)
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['n_epochs'], eta_min=config['base_lr']/config['downscaling_after_freezing'])
+
+            epoch_loss = train_epoch(config['batch_size'], model, train_loader, optimizer, scheduler, device, LossTr, epoch, config)
+
+            val_loss, pos_sim, neg_sim, neg_sim_aug = validate(model, val_loader, device, LossTr, config)
+
+            
+            val_losses.append(val_loss)
+            
+            # Save model checkpoints
+            if (epoch + 1) % config['save_model_interval'] == 0 or epoch == 0:
+                save_path = os.path.join(ckpt_dir, f"model_epoch_{epoch}.pth")
+                torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), save_path)
+                #wandb.save(save_path)
+
+            # Save best model
+            if val_loss <= min(val_losses):
+                best_path = os.path.join(ckpt_dir, "model_best.pth")
+                torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), best_path)
+                #wandb.save(best_path)
+
+            
+            # Logging with wandb
+            wandb.log({
+                "epoch": epoch,
+                "train_loss": epoch_loss,
+                "val_loss": val_loss,
+                "batch_size": train_loader.batch_sampler.batch_size,
+                #"positive_samples": wandb.Histogram(pos_sim),
+                #"negative_samples": wandb.Histogram(neg_sim),
+                #"negative_samples_augmented": wandb.Histogram(neg_sim_aug),
+                "learning rate": optimizer.param_groups[0]['lr']
+            })
+
+        wandb.finish()
+        dist.destroy_process_group()
+    except Exception as e:
+        setup_logging(ckpt_dir) 
+        error_msg = f"An error occurred:\n{traceback.format_exc()}"
+        logging.error(error_msg)
         
-        # Save model checkpoints
-        if (epoch + 1) % config['save_model_interval'] == 0 or epoch == 0:
-            save_path = os.path.join(ckpt_dir, f"model_epoch_{epoch}.pth")
-            torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), save_path)
-            #wandb.save(save_path)
-
-        # Save best model
-        if val_loss <= min(val_losses):
-            best_path = os.path.join(ckpt_dir, "model_best.pth")
-            torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), best_path)
-            #wandb.save(best_path)
-
-        
-        # Logging with wandb
-        wandb.log({
-            "epoch": epoch,
-            "train_loss": epoch_loss,
-            "val_loss": val_loss,
-            "batch_size": train_loader.batch_sampler.batch_size,
-            #"positive_samples": wandb.Histogram(pos_sim),
-            #"negative_samples": wandb.Histogram(neg_sim),
-            #"negative_samples_augmented": wandb.Histogram(neg_sim_aug),
-            "learning rate": optimizer.param_groups[0]['lr']
-        })
-
-    wandb.finish()
-    dist.destroy_process_group()
+        raise
 
     return train_loader, val_loader, device
 
@@ -816,6 +863,8 @@ def unfreeze_backbone(model):
 
 #@find_executable_batch_size(starting_batch_size=config['batch_size'])
 def train_epoch(batch_size, model, train_loader, optimizer, scheduler, device, LossTr, epoch, config):
+    torch.autograd.set_detect_anomaly(True)
+
     model.train()
     epoch_loss = 0
     train_loader.batch_sampler.batch_size = batch_size  # Update batch size
@@ -917,10 +966,19 @@ def train_by_models(real_data_dir: str, network_names: list, **kwargs):
     
     for network_name in network_names:
         print(f"Training {network_name}...")
-        train_loader, val_loader, device = setup_training(
-            root_dir=real_data_dir,
-            network_name=network_name,
-        )
+
+        try:
+            train_loader, val_loader, device = setup_training(
+                root_dir=real_data_dir,
+                network_name=network_name,
+            )
+
+        except Exception as e:
+
+            error_msg = f"An error ocurredL \n {traceback.format_exc()}"
+            logging.error(error_msg)
+
+            raise
         
 
 def load_best_model_for_inference(network_name, config, checkpoints_dir='./checkpoints', batch_size=32, num_workers=4):
@@ -963,7 +1021,7 @@ def load_best_model_for_inference(network_name, config, checkpoints_dir='./check
 
     # Move the model to GPU if available
     if config['multi_gpu']:
-        model = DDP(model)
+        model = torch.nn.DataParallel(model)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
@@ -1154,6 +1212,12 @@ def create_dataloaders(train_paths, val_paths, synthetic_paths, config):
     
     num_channels = 3    # Create separate datasets for train and validation
 
+    from utils import convert_to_npy
+    
+    train_paths = convert_to_npy(train_paths, os.path.join(config['output_preprocessing'], 'train'), target_res)
+    val_paths = convert_to_npy(val_paths, os.path.join(config['output_preprocessing'], 'val'), target_res)
+    synthetic_paths = convert_to_npy(synthetic_paths, os.path.join(config['output_preprocessing'], 'synth'), target_res)
+
     train_dataset = ContrastiveDataset(
         file_paths=train_paths,
         target_resolution=target_res,
@@ -1175,7 +1239,6 @@ def create_dataloaders(train_paths, val_paths, synthetic_paths, config):
             num_channels=num_channels
             )
 
-    # Create DataLoaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['inference_bs'],
@@ -1212,49 +1275,61 @@ def inference_and_save_embeddings(model, device, train_standard_loader, val_stan
 
     def process_dataloader(dataloader, name, model, device, adversarial=False):
         embeddings = []
+        embeddings_adv = []
         image_ids = []
+        image_ids_adv = []
 
         with torch.no_grad():
             for batch in tqdm(dataloader, desc=f"Processing {name} data"):
                 try:
-                    if not adversarial:
-                        images = batch['data']
-                    else:
-                        images = batch['data_pos']
+                    images = batch['data']
+                    if adversarial:
+                        images_adv = batch['data_pos']
                     
                     images = images.to(device)
+
+                    if adversarial:
+                        images_adv = images_adv.to(device)
+                    
                     current_image_ids = batch['img_id']
 
                     output = model(images)
+                    
+                    if adversarial:
+                        output_adv = model(images_adv)
 
                     if not isinstance(output, torch.Tensor):
                         output = output.logits if hasattr(output, 'logits') else output[0]
 
                     embeddings.append(output.cpu().numpy())
                     image_ids.extend(current_image_ids)
+
+                    if adversarial:
+                        if not isinstance(output_adv, torch.Tensor):
+                            output_adv = output_adv.logits if hasattr(output_adv, 'logits') else output[0]
+
+                        embeddings_adv.append(output_adv.cpu().numpy())
+                        image_ids_adv.extend(current_image_ids)
+
                 except Exception as e:
                     print(f"Error processing batch in {name} dataloader: {str(e)}")
                     print(f"Batch type: {type(batch)}")
                     if isinstance(images, torch.Tensor):
                         print(f"Images shape: {images.shape}")
                     raise
-
-        return np.vstack(embeddings), image_ids
+        if adversarial:
+            return np.vstack(embeddings), image_ids, np.vstack(embeddings_adv), image_ids_adv
+        else:
+            return np.vstack(embeddings), image_ids, None, None
     try:
         print('Proccessing train standard')
-        train_standard_embeddings, train_standard_ids = process_dataloader(train_standard_loader, "train_standard", model, device)
-        print()
-        print('Processing train adversarial')
-        train_adversarial_embeddings, train_adversarial_ids = process_dataloader(train_standard_loader, "train_adversarial", model, device, adversarial = True)
+        train_standard_embeddings, train_standard_ids, train_adversarial_embeddings, train_adversarial_ids= process_dataloader(train_standard_loader, "train_standard", model, device, adversarial=True)
         print()
         print('Processing val')
-        val_standard_embeddings, val_standard_ids = process_dataloader(val_standard_loader, "val_standard", model, device)
-        print()
-        print('Processing val adversarial')
-        val_adversarial_embeddings, val_adversarial_ids = process_dataloader(val_standard_loader, "val_adversarial", model, device, adversarial = True)
+        val_standard_embeddings, val_standard_ids, val_adversarial_embeddings, val_adversarial_ids= process_dataloader(val_standard_loader, "val_standard", model, device, adversarial=True)
         print()
         print('Processing synthetic')
-        synth_standard_embeddings, synth_standard_ids = process_dataloader(synth_loader, "synth_standard", model, device)
+        synth_standard_embeddings, synth_standard_ids, _, _ = process_dataloader(synth_loader, "synth_standard", model, device, adversarial = False)
 
         output_file = os.path.join(output_dir, f"{network_name}_embeddings_aug_{config['augmentation_strength']}.h5")
         with h5py.File(output_file, 'w') as f:

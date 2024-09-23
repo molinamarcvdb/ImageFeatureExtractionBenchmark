@@ -13,6 +13,17 @@ from realism import realism_handling
 from privacy_benchmark import setup_training, create_dataloaders, visualize_augmentations, load_best_model_for_inference, inference_and_save_embeddings, compute_distances_and_plot, find_and_plot_similar_images   
 from tqdm import tqdm
 import traceback
+import logging
+from datetime import datetime
+import sys
+
+def setup_logging():
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_filename = f'error_{timestamp}.err.log'
+    logging.basicConfig(filename=log_filename, level=logging.ERROR,
+                        format='%(asctime)s - %(levelname)s - %(message)s')
+
+setup_logging()
 
 def load_config(config_path):
     with open(config_path, 'r') as file:
@@ -240,11 +251,18 @@ def main():
         for network_name in config['networks']:
             print(f"Processing network: {network_name}")
             if network_name in network_list:
-                train_loader, val_loader, device = setup_training(
-                    root_dir=config['real_dataset_path'],
-                    network_name=network_name,
-                    **config
-                )
+                try:
+                    train_loader, val_loader, device = setup_training(
+                        root_dir=config['real_dataset_path'],
+                        network_name=network_name,
+                        **config
+                    )
+                except Exception as e:
+        
+                    error_msg = f"An error occurred:\n{traceback.format_exc()}"
+                    logging.error(error_msg)
+                    
+                    raise
     if config.get('adversarial_privacy_assesment', False):
 
         output_dir = './embeddings'
