@@ -39,6 +39,7 @@ def load_checkpoint(
     opt,
     scaler,
 ):
+    print(r_path)
     try:
         checkpoint = torch.load(r_path, map_location=torch.device('cpu'))
         epoch = checkpoint['epoch']

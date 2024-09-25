@@ -41,6 +41,7 @@ from src.utils.logging import (
     grad_logger,
     AverageMeter)
 from src.utils.tensors import repeat_interleave_batch
+from src.utils.moco import MocoLoss
 from src.datasets.imagenet1k import make_imagenet1k
 from src.datasets.imageDataset import make_contrastive_data 
 
@@ -116,6 +117,12 @@ def main(args, resume_preempt=False):
     image_folder = args['data']['image_folder']
     crop_size = args['data']['crop_size']
     crop_scale = args['data']['crop_scale']
+    dataset_info = args['data']['dataset_info']
+    unique_individual_id = args['data']['unique_individual_id']
+    unique_image_id = args['data']['unique_image_id']
+    split_ratio = args['data']['split_ratio']
+    image_extension = args['data']['image_extension']
+    seed = args['data']['seed']
     # --
 
     # -- MASK
@@ -139,6 +146,8 @@ def main(args, resume_preempt=False):
     start_lr = args['optimization']['start_lr']
     lr = args['optimization']['lr']
     final_lr = args['optimization']['final_lr']
+    moco_temp = args['optimization']['temp_moco']
+    lambda_loss = args['optimization']['lambda_loss']
 
     # -- LOGGING
     folder = args['logging']['folder']
@@ -222,7 +231,14 @@ def main(args, resume_preempt=False):
             image_folder=image_folder,
             copy_data=copy_data,
             drop_last=True,
-            target_res=crop_size
+            target_res=crop_size,
+            folder=folder,
+            dataset_info=dataset_info,
+            unique_individual_id=unique_individual_id,
+            unique_image_id=unique_image_id,
+            split_ratio=split_ratio,
+            image_extension=image_extension,
+            seed=seed
             )
     ipe = len(unsupervised_loader)
 
@@ -249,6 +265,8 @@ def main(args, resume_preempt=False):
     # -- momentum schedule
     momentum_scheduler = (ema[0] + i*(ema[1]-ema[0])/(ipe*num_epochs*ipe_scale)
                           for i in range(int(ipe*num_epochs*ipe_scale)+1))
+    # -- instantaniate Moco loss
+    moco_loss = MocoLoss(moco_temp)
 
     start_epoch = 0
     # -- load training checkpoint
@@ -303,10 +321,14 @@ def main(args, resume_preempt=False):
             def load_imgs():
                 # -- unsupervised imgs
                 imgs = udata['data_pos'].to(device, non_blocking=True)
+                imgs_natural = udata['data'].to(device, non_blocking=True)
+                if itr <=1:
+                    print('normal', imgs.shape, type(imgs), imgs.dtype)
+                    print('target', imgs_natural.shape, type(imgs_natural), imgs_natural.dtype)
                 masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
                 masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
-                return (imgs, masks_1, masks_2)
-            imgs, masks_enc, masks_pred = load_imgs()
+                return (imgs, imgs_natural,  masks_1, masks_2)
+            imgs, imgs_natural, masks_enc, masks_pred = load_imgs()
             maskA_meter.update(len(masks_enc[0][0]))
             maskB_meter.update(len(masks_pred[0][0]))
 
@@ -317,29 +339,32 @@ def main(args, resume_preempt=False):
 
                 def forward_target():
                     with torch.no_grad():
-                        h = target_encoder(imgs)
-                        h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
+                        h0 = target_encoder(imgs_natural)
+                        h = F.layer_norm(h0, (h0.size(-1),))  # normalize over feature-dim
                         B = len(h)
                         # -- create targets (masked regions of h)
                         h = apply_masks(h, masks_pred)
                         h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
-                        return h
+                        return h, h0
 
                 def forward_context():
+                    z0 = encoder(imgs)
                     z = encoder(imgs, masks_enc)
                     z = predictor(z, masks_enc, masks_pred)
-                    return z
+                    return z, z0
 
-                def loss_fn(z, h):
+                def loss_fn(z, h, z0, h0):
                     loss = F.smooth_l1_loss(z, h)
+                    loss_moco = moco_loss(z0, h0)
+                    loss = (1-lambda_loss) * loss + lambda_loss * loss_moco
                     loss = AllReduce.apply(loss)
                     return loss
 
                 # Step 1. Forward
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
-                    h = forward_target()
-                    z = forward_context()
-                    loss = loss_fn(z, h)
+                    h, h0 = forward_target()
+                    z, z0 = forward_context()
+                    loss = loss_fn(z, h, z0, h0)
 
                 #  Step 2. Backward & step
                 if use_bfloat16:

@@ -5,10 +5,16 @@ data:
   - 0.3
   - 1.0
   crop_size: 224
+  dataset_info: /mnt/DV-MICROK/Syn.Dat/Marc/GitLab/syntheva/Notebooks/dicom_metadata.csv
+  image_extension: .jpeg
   image_folder: imagenet_full_size/061417/
   num_workers: 10
   pin_mem: true
   root_path: /mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/output_images_512_all
+  seed: 42
+  split_ratio: 0.8
+  unique_image_id: Filename
+  unique_individual_id: Patient ID
   use_color_distortion: false
   use_gaussian_blur: false
   use_horizontal_flip: false
@@ -46,7 +52,9 @@ optimization:
   final_lr: 1.0e-06
   final_weight_decay: 0.4
   ipe_scale: 1.0
+  lambda_loss: 0.5
   lr: 0.001
   start_lr: 0.0002
+  temp_moco: 0.2
   warmup: 3
   weight_decay: 0.04

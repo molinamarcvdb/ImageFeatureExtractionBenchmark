@@ -38,7 +38,7 @@ def make_transforms(
             rnd_gray])
         return color_distort
 
-    transform_list = []
+    transform_list = [transforms.ToPILImage()]
     transform_list += [transforms.RandomResizedCrop(crop_size, scale=crop_scale)]
     if horizontal_flip:
         transform_list += [transforms.RandomHorizontalFlip()]
