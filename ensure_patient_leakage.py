@@ -5,6 +5,7 @@ import pandas as pd
 import polars as pl
 import random
 from collections import defaultdict
+from typing import List
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()
@@ -13,6 +14,7 @@ def create_train_val_split(
         patient_data_dir, 
         patient_info_path,
         patient_id: str,
+        secondary_ids: List,
         unique_identifier_col: str,
         train_ratio=0.8, 
         extension: str = '.jpeg',
@@ -30,15 +32,25 @@ def create_train_val_split(
             if file.endswith((extension)):
                 image_paths.append(os.path.join(patient_data_dir, file))
 
-    total_number_imgs = len(image_paths)
 
     # Read patient info
     df = pd.read_csv(patient_info_path)
     dfl = pl.from_pandas(df)
 
-    # Group images by patient
-    patient_images = dfl.group_by(patient_id).agg(pl.col(unique_identifier_col).alias('image_list')).sort(by=patient_id)
-    
+    # Group images by patient_id
+    extended_ids = [patient_id]
+    extended_ids.extend(secondary_ids)
+    unique_images = (
+        dfl.sort(unique_identifier_col)  # Sort to ensure consistent selection of the "first" image
+           .group_by(extended_ids)
+           .agg(pl.col(unique_identifier_col).first().alias('unique_image'))
+    )
+# Group the unique images by patient
+    patient_images = (
+        unique_images.group_by(patient_id)
+                     .agg(pl.col('unique_image').alias('image_list'))
+                     .sort(patient_id)
+    )
     # Create dictionary of patient to image paths
     patient_to_images = defaultdict(list)
     for patient, images in sorted(zip(patient_images[patient_id], patient_images['image_list'])):
@@ -47,9 +59,17 @@ def create_train_val_split(
             if full_path in image_paths:
                 patient_to_images[patient].append(full_path)
 
+        
     # Get the list of patients and shuffle it
     patients = sorted(list(patient_to_images.keys()))
     random.Random(seed).shuffle(patients)
+
+    imgs = []
+
+    for patient in patients:
+        imgs.extend(patient_to_images[patient])
+
+    total_number_imgs = len(imgs)
 
     train_paths: list[str] = []
     val_paths: list[str] = []
@@ -78,13 +98,13 @@ def create_train_val_split(
     return train_paths, val_paths
 
 ## Usage
-#patient_data_dir = '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/output_images_512_all'
-#patient_info_path = '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/syntheva/Notebooks/dicom_metadata.csv'
-#
-## Use a fixed seed for reproducibility
-#seed = 42
-#train_paths, val_paths = create_train_val_split(patient_data_dir, patient_info_path, patient_id='Patient ID', unique_identifier_col='Filename', train_ratio=0.8, seed=seed)
-#
-#print(f"Number of training images: {len(train_paths)}")
-#print(f"Number of validation images: {len(val_paths)}")
-#print(f"Final split ratio {len(train_paths)/(len(train_paths)+len(val_paths))}")
+# patient_data_dir = '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/output_images_512_all'
+# patient_info_path = '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/syntheva/Notebooks/dicom_metadata.csv'
+
+# # Use a fixed seed for reproducibility
+# seed = 42
+# train_paths, val_paths = create_train_val_split(patient_data_dir, patient_info_path, patient_id='Patient ID', unique_identifier_col='Filename', secondary_ids= ['Laterality', 'Projection'], train_ratio=0.8, seed=seed)
+
+# print(f"Number of training images: {len(train_paths)}")
+# print(f"Number of validation images: {len(val_paths)}")
+# print(f"Final split ratio {len(train_paths)/(len(train_paths)+len(val_paths))}")

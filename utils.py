@@ -36,8 +36,12 @@ def convert_to_npy(input_paths, output_dir, shape):
     
     # If mismatch, clear the output directory and perform conversion
     print("Mismatch in files. Clearing output directory and performing conversion.")
-    shutil.rmtree(output_dir)
-    os.makedirs(output_dir)
+    try:
+        shutil.rmtree(output_dir)
+    except FileNotFoundError as e:
+        print('FileNotFoundError', e)
+        pass
+    os.makedirs(output_dir, exist_ok=True)
     
     new_paths = []
     file_sizes = []
@@ -66,7 +70,8 @@ def convert_to_npy(input_paths, output_dir, shape):
 
     # Check if all file sizes are the same
     if len(set(file_sizes)) == 1:
-        print(f"Warning: All converted files have the same size of {file_sizes[0]} bytes.")
+        pass
+        #print(f"Warning: All converted files have the same size of {file_sizes[0]} bytes.")
     else:
         print(f"File sizes vary. Min: {min(file_sizes)}, Max: {max(file_sizes)}, Average: {sum(file_sizes)/len(file_sizes)}")
 
@@ -110,6 +115,61 @@ class _RepeatSampler(object):
     def __iter__(self):
         while True:
             yield from iter(self.sampler)
+
+from ijepa.src.helper import load_checkpoint, init_model
+import torch
+
+import os 
+import yaml
+from collections import OrderedDict
+
+def load_ddp_model(model, checkpoint_path, network_key):
+    # Load the state dict
+    state_dict = torch.load(checkpoint_path, map_location='cpu')[network_key]
+    
+    # Check if it's a DDP saved model
+    if not hasattr(model, 'module') and all(k.startswith('module.') for k in state_dict.keys()):
+        # Create a new OrderedDict without the 'module.' prefix
+        new_state_dict = OrderedDict()
+        for k, v in state_dict.items():
+            name = k[7:]  # remove 'module.' prefix
+            new_state_dict[name] = v
+        
+        # Load the modified state dict
+        model.load_state_dict(new_state_dict)
+    else:
+        # If it's not a DDP saved model, load normally
+        model.load_state_dict(state_dict)
+    
+    return model
+
+
+def load_ijepa_not_contrastive(config):
+    
+    model_dir = config['ijepa_model_dir']
+
+    yaml_file = os.path.join(model_dir, [file for file in  os.listdir(model_dir) if file.endswith('.yaml')][0])
+    tar_file = os.path.join(model_dir, [file for file in  os.listdir(model_dir) if file.endswith('.pth.tar')][0])
+
+    with open(yaml_file, 'r') as fh:
+
+        config = yaml.safe_load(fh)
+
+    device = torch.device('cuda:0')
+    torch.cuda.set_device(device)
+
+    encoder, _ = init_model(
+        device=device,
+        patch_size=config['mask']['patch_size'],
+        crop_size=config['data']['crop_size'],
+        pred_depth=config['meta']['pred_depth'],
+        pred_emb_dim=config['meta']['pred_emb_dim'],
+        model_name = config['meta']['model_name'])
+
+
+    encoder = load_ddp_model(encoder, tar_file, 'encoder')
+
+    return encoder
 
 
 # Link azure to local path and group answers

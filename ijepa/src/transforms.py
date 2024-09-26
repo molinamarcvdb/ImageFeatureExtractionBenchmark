@@ -21,6 +21,7 @@ def make_transforms(
     crop_scale=(0.3, 1.0),
     color_jitter=1.0,
     horizontal_flip=False,
+    vertical_flip=True,
     color_distortion=False,
     gaussian_blur=False,
     normalization=((0.485, 0.456, 0.406),
@@ -41,7 +42,9 @@ def make_transforms(
     transform_list = [transforms.ToPILImage()]
     transform_list += [transforms.RandomResizedCrop(crop_size, scale=crop_scale)]
     if horizontal_flip:
-        transform_list += [transforms.RandomHorizontalFlip()]
+        transform_list += [transforms.RandomHorizontalFlip(p=0.5)]
+    if vertical_flip:
+        transform_list += [transforms.RandomVerticalFlip(p=0.2)]
     if color_distortion:
         transform_list += [get_color_distortion(s=color_jitter)]
     if gaussian_blur:

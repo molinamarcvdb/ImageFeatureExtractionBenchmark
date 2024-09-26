@@ -50,6 +50,7 @@ import torch.distributed as dist
 import sys
 import traceback
 import logging
+from utils import load_ijepa_not_contrastive
 
 def setup_logging(dire):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -223,6 +224,7 @@ class ContrastiveNetwork(nn.Module):
             ) 
             self.final_projection = nn.Linear(self.backbone_output_dim, self.feature_dim)
         else:
+            
             self.fc = nn.Linear(self.backbone_output_dim, self.feature_dim)
 
     def get_backbone_out_dim(self):
@@ -410,13 +412,13 @@ from pytorch_metric_learning.losses import NTXentLoss
 import torch.nn.functional as F
 
 class ContrastiveDataset(torch.utils.data.Dataset):
-    def __init__(self, file_paths, target_resolution, transforms, num_channels=3):
+    def __init__(self, file_paths, target_resolution, transforms, num_channels=3, inference=False):
         self.paths = file_paths
         self.target_resolution = target_resolution
         self.transforms = transforms
         self.resolution_transform = tio.Resize(target_resolution)
         self.num_channels = num_channels
-
+        self.inference = inference
     def __len__(self):
         return len(self.paths)
 
@@ -441,7 +443,7 @@ class ContrastiveDataset(torch.utils.data.Dataset):
         img = tio.ScalarImage(tensor=img)
 
         # Apply resolution transform
-        img = self.resolution_transform(img)
+        #img = self.resolution_transform(img)
 
         # Apply other transforms
         if aug:
@@ -453,7 +455,7 @@ class ContrastiveDataset(torch.utils.data.Dataset):
             img = mandatory_aug(img)
 
         # Get the data tensor and remove the extra 'z' dimension
-        img_data = img.data.squeeze(-1)
+        img_data = img.data.squeeze(-1).squeeze(0)
         if img_data.shape[0] != 3:
             img_data = img_data.repeat(3, 1, 1)
         # Ensure the image has 3 channels
@@ -560,6 +562,7 @@ def train_val_paths(data_path, config):
             patient_data_dir = config['real_dataset_path'],
             patient_info_path = config['dataset_info'],
             patient_id = config['unique_individual_id'],
+            secondary_ids = config['secondary_ids'],
             unique_identifier_col = config['unique_image_id'],
             train_ratio = config['split_ratio'],
             extension = config['image_extension'],
@@ -581,18 +584,100 @@ def setup_training(root_dir, network_name, **kwargs):
         DataLoader, DataLoader, torch.device: Training DataLoader, Validation DataLoader, and device.
     """
     
-    # Update defaults with provided kwargs
-    config = {**kwargs}
-    print(f'Starting trainign wiht the following config: \n {config}')
+    
+    local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
+    rank = int(os.environ["LOCAL_RANK"])
+
+    # Set up DistributedDataParallel
+    dist.init_process_group("nccl", rank=rank, world_size=local_world_size)
+    torch.cuda.set_device(rank) 
+    #dist.barrier()
+    
+    
+    if rank == 0:
+
+        # Update defaults with provided kwargs
+        config = {**kwargs}
+        print(f'Starting trainign wiht the following config: \n {config}')
+
+        # Select target reolution for eahc specific model 
+        target_res = (224, 224)
+        
+        # Generate timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        # Create a unique directory name combining timestamp and network name
+        run_name = f"{timestamp}_{network_name}"
+        wandb.init(project="privacy_benchmark", name=run_name, config=config)
+
+        # Set up checkpoint directory
+        ckpt_dir = os.path.join('./checkpoints', run_name)
+        os.makedirs(ckpt_dir, exist_ok=True)
+        
+        # Save config in a json
+        json_file_path = os.path.join(ckpt_dir, f"config.json")
+
+        with open(json_file_path, 'w') as json_file:
+            json.dump(config, json_file, indent=2)
+
+        # Create the dataset
+        train_paths, val_paths = train_val_paths(root_dir, config)
+
+        # Ensure target_res is 3D
+        if len(target_res) == 2:
+            target_res = (*target_res, 1)
+        
+        num_channels = 3    # Create separate datasets for train and validation
+        
+        from utils import convert_to_npy
+        
+        # Save paths to JSON file
+        paths_dict = {
+            "train_paths": train_paths,
+            "val_paths": val_paths
+        }
+        json_file_path = os.path.join(ckpt_dir, f"{run_name}_image_paths.json")
+        with open(json_file_path, 'w') as json_file:
+            json.dump(paths_dict, json_file, indent=2)
+
+        print(f"Image paths saved to {json_file_path}")    
+        
+        train_paths = convert_to_npy(train_paths, os.path.join(config['output_preprocessing'], 'train'), target_res)
+        val_paths = convert_to_npy(val_paths, os.path.join(config['output_preprocessing'], 'val'), target_res)
+        # Prepare data for broadcasting
+        data_to_broadcast = {
+            'config': config,
+            'run_name': run_name,
+            'ckpt_dir': ckpt_dir,
+            'timestamp': timestamp,
+            'train_paths': train_paths,
+            'val_paths': val_paths,
+            'target_res': target_res,
+            'num_channels': num_channels
+        }
+    else:
+        data_to_broadcast = None
+
+
+    # Broadcast data from rank 0 to all other ranks
+    data_to_broadcast = [data_to_broadcast]
+    dist.broadcast_object_list(data_to_broadcast, src=0, device=torch.cuda.current_device())
+    data_to_broadcast = data_to_broadcast[0]
+    # Ensure all processes have received the broadcasted data
+
+    # Unpack the broadcasted data
+    if rank != 0:
+        config = data_to_broadcast['config']
+        run_name = data_to_broadcast['run_name']
+        ckpt_dir = data_to_broadcast['ckpt_dir']
+        train_paths = data_to_broadcast['train_paths']
+        val_paths = data_to_broadcast['val_paths']
+        timestamp = data_to_broadcast['timestamp']
+        target_res = data_to_broadcast['target_res']
+        num_channels = data_to_broadcast['num_channels']
 
     # Set up device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # Set up DistributedDataParallel
-    local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
-    rank = int(os.environ["LOCAL_RANK"])
-    dist.init_process_group("nccl", rank=rank, world_size=local_world_size)
     
-    print(f"Start run basic DDP on rank: {rank} and world size: {local_world_size}")
 
     # Create modle and move it to gpu wiht rank id X
     device = rank % torch.cuda.device_count()
@@ -608,33 +693,17 @@ def setup_training(root_dir, network_name, **kwargs):
         raise ValueError(f'Error {e} with {network_name}')
 
 
-    # Select target reolution for eahc specific model 
-    target_res = (224, 224)
-    if isinstance(model.backbone, models.Inception3):
-        target_res = (299, 299)
+    #if isinstance(model.backbone, models.Inception3):
+    #    target_res = (299, 299)
 
-    model.to(device) 
-    model = DDP(model, device_ids = [device], output_device=rank, broadcast_buffers=False)
+    model.to(device)
+    #if 'clip' in network_name or 'dino' in network_name:
+    model = DDP(model, device_ids = [device], output_device=rank, broadcast_buffers=False, find_unused_parameters=True)
+    #else:
+
+    #    model = DDP(model, device_ids = [device], output_device=rank, broadcast_buffers=False)
+
     
-    # Generate timestamp
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    
-    # Create a unique directory name combining timestamp and network name
-    run_name = f"{timestamp}_{network_name}"
-    wandb.init(project="privacy_benchmark", name=run_name, config=config)
-
-    # Set up checkpoint directory
-    ckpt_dir = os.path.join('./checkpoints', run_name)
-    os.makedirs(ckpt_dir, exist_ok=True)
-    
-    # Save config in a json
-    json_file_path = os.path.join(ckpt_dir, f"config.json")
-
-    with open(json_file_path, 'w') as json_file:
-        json.dump(config, json_file, indent=2)
-
-    # Create the dataset
-    train_paths, val_paths = train_val_paths(root_dir, config)
 
 
    # Define preprocessing and training transforms
@@ -692,16 +761,6 @@ def setup_training(root_dir, network_name, **kwargs):
 # Validation only uses mandatory transforms
     VAL_TRANSFORMS = MANDATORY_TRANSFORMS
 
-    # Ensure target_res is 3D
-    if len(target_res) == 2:
-        target_res = (*target_res, 1)
-    
-    num_channels = 3    # Create separate datasets for train and validation
-    
-    from utils import convert_to_npy
-    
-    train_paths = convert_to_npy(train_paths, os.path.join(config['output_preprocessing'], 'train'), target_res)
-    val_paths = convert_to_npy(val_paths, os.path.join(config['output_preprocessing'], 'val'), target_res)
     
     train_dataset = ContrastiveDataset(
         file_paths=train_paths,
@@ -745,7 +804,8 @@ def setup_training(root_dir, network_name, **kwargs):
             train_dataset,
             **loader_args 
             )
-    
+    #print('Saving a set of iamges and its augmented versions')
+    #visualize_augmentations_contrastive(train_loader, num_images=4, num_augmentations=3)
     loader_args = dict(
             batch_size=config['batch_size'],
             shuffle=False,
@@ -760,20 +820,10 @@ def setup_training(root_dir, network_name, **kwargs):
             **loader_args 
             )
 
-    # Save paths to JSON file
-    paths_dict = {
-        "train_paths": train_paths,
-        "val_paths": val_paths
-    }
-    json_file_path = os.path.join(ckpt_dir, f"{run_name}_image_paths.json")
-    with open(json_file_path, 'w') as json_file:
-        json.dump(paths_dict, json_file, indent=2)
-
-    print(f"Image paths saved to {json_file_path}")    
   
       # Define optimizer, scheduler, and loss function
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['base_lr'])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['n_epochs'], eta_min=config['base_lr'])
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config['base_lr'])
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, config['gamma'])
 
        # Choose loss function based on config
     if config['loss_type'].lower() == 'ntxent':
@@ -788,6 +838,7 @@ def setup_training(root_dir, network_name, **kwargs):
     else:
         raise ValueError(f"Unsupported loss type: {config['loss_type']}. Choose 'ntxent' or 'triplet'.")
  
+    miner = miners.BatchHardMiner()
     cosine_similarity = CosineSimilarity()
     
     # Training loop
@@ -803,41 +854,46 @@ def setup_training(root_dir, network_name, **kwargs):
             if epoch == config['unfreeze_epoch']:
                 print(f"Unfreezing the entire network at epoch {epoch}")
                 unfreeze_backbone(model)
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['n_epochs'], eta_min=config['base_lr']/config['downscaling_after_freezing'])
+                #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['n_epochs'], eta_min=config['base_lr']/config['downscaling_after_freezing'])
 
-            epoch_loss = train_epoch(config['batch_size'], model, train_loader, optimizer, scheduler, device, LossTr, epoch, config)
+            epoch_loss = train_epoch(config['batch_size'], model, train_loader, optimizer, scheduler, device, LossTr, epoch, config, miner)
 
-            val_loss, pos_sim, neg_sim, neg_sim_aug = validate(model, val_loader, device, LossTr, config)
+            val_loss, pos_sim, euc_pos_dist, euc_neg_dist = validate(model, val_loader, device, LossTr, config, miner)
 
             
             val_losses.append(val_loss)
+
             
             # Save model checkpoints
-            if (epoch + 1) % config['save_model_interval'] == 0 or epoch == 0:
-                save_path = os.path.join(ckpt_dir, f"model_epoch_{epoch}.pth")
-                torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), save_path)
-                #wandb.save(save_path)
+            if rank ==0:
+                if (epoch + 1) % config['save_model_interval'] == 0 or epoch == 0:
+                    save_path = os.path.join(ckpt_dir, f"model_epoch_{epoch}.pth")
+                    torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), save_path)
+                    #wandb.save(save_path)
 
-            # Save best model
-            if val_loss <= min(val_losses):
-                best_path = os.path.join(ckpt_dir, "model_best.pth")
-                torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), best_path)
-                #wandb.save(best_path)
+                # Save best model
+                if val_loss <= min(val_losses):
+                    best_path = os.path.join(ckpt_dir, "model_best.pth")
+                    torch.save(model.module.state_dict() if config['multi_gpu'] else model.state_dict(), best_path)
+                    #wandb.save(best_path)
 
             
-            # Logging with wandb
-            wandb.log({
-                "epoch": epoch,
-                "train_loss": epoch_loss,
-                "val_loss": val_loss,
-                "batch_size": train_loader.batch_sampler.batch_size,
-                #"positive_samples": wandb.Histogram(pos_sim),
-                #"negative_samples": wandb.Histogram(neg_sim),
-                #"negative_samples_augmented": wandb.Histogram(neg_sim_aug),
-                "learning rate": optimizer.param_groups[0]['lr']
-            })
+            # Logging with wandbi
+            if rank ==0:
+                wandb.log({
+                    "epoch": epoch,
+                    "train_loss": epoch_loss,
+                    "val_loss": val_loss,
+                    "batch_size": train_loader.batch_sampler.batch_size,
+                    #"positive_samples": wandb.Histogram(euc_pos_dist),
+                    #"negative_samples": wandb.Histogram(euc_neg_dist),
+                    "learning rate": optimizer.param_groups[0]['lr']
+                })
+
+            dist.barrier()            
 
         wandb.finish()
+        dist.barrier()
         dist.destroy_process_group()
     except Exception as e:
         setup_logging(ckpt_dir) 
@@ -862,7 +918,7 @@ def unfreeze_backbone(model):
         param.requires_grad = True
 
 #@find_executable_batch_size(starting_batch_size=config['batch_size'])
-def train_epoch(batch_size, model, train_loader, optimizer, scheduler, device, LossTr, epoch, config):
+def train_epoch(batch_size, model, train_loader, optimizer, scheduler, device, LossTr, epoch, config, miner=None):
     torch.autograd.set_detect_anomaly(True)
 
     model.train()
@@ -875,44 +931,49 @@ def train_epoch(batch_size, model, train_loader, optimizer, scheduler, device, L
         optimizer.zero_grad()
         Pos11 = batch['data'].to(device)
         Pos12 = batch['data_pos'].to(device)
-        # Forward pas # Ensure input is 4D: [batch_size, channels, height, width]
+        
+        # Ensure input is 4D: [batch_size, channels, height, width]
         if Pos11.dim() != 4:
             raise ValueError(f"Expected 4D input, got {Pos11.dim()}D with shape {Pos11.shape}")
        
         PosEmb11 = model(Pos11)
         PosEmb12 = model(Pos12)
 
-         # Create "labels" based on batch indices
-        Labels = torch.arange(PosEmb11.shape[0], device=device) 
-
-        if config['loss_type'].lower() == 'ntxent':
-            LossPos1 = LossTr(torch.cat((PosEmb11, PosEmb12), dim=0), torch.cat((Labels, Labels), dim=0))
+        # Create labels and positives mask
+        batch_size = PosEmb11.shape[0]
+        labels = torch.arange(batch_size, device=device)
+        combined_labels = torch.cat([labels, labels])
         
-        elif config['loss_type'].lower() == 'triplet':  # margin loss
-            # Combine embeddings and labels
-            embeddings = torch.cat((PosEmb11, PosEmb12), dim=0)
-            combined_labels = torch.cat((Labels, Labels), dim=0)
+        positives_mask = torch.eye(batch_size, device=device).bool()
+        combined_positives_mask = torch.cat([positives_mask, positives_mask], dim=1)
 
-            # Get triplets
-            miner = miners.BatchHardMiner()
-            hard_pairs = miner(embeddings, combined_labels)
+        # Combine embeddings
+        embeddings = torch.cat((PosEmb11, PosEmb12), dim=0)
 
-            # Compute loss
-            LossPos1 = LossTr(embeddings, combined_labels, hard_pairs)
-            
+        # Use miner if provided
+        if miner is not None:
+            miner_output = miner(embeddings, combined_labels)
+        else:
+            miner_output = None
+
+        # Compute loss based on the specified loss type
+        LossPos1 = LossTr(embeddings, combined_labels, miner_output)
+       
+     
         LossPos1.backward()
         optimizer.step()
         scheduler.step()
 
         epoch_loss += LossPos1.item()
         progress_bar.set_postfix({'loss': f'{LossPos1.item():.4f}'})
-
+        
     return epoch_loss / len(train_loader)
 
-def validate(model, val_loader, device, LossTr, config):
+def validate(model, val_loader, device, LossTr, config, miner=None):
     model.eval()
     val_loss = 0
     pos_sim, neg_sim, neg_sim_aug = [], [], []
+    euc_pos_dist, euc_neg_dist = [], []
     
     for batch in val_loader:
         Pos11 = batch['data'].to(device)
@@ -921,36 +982,54 @@ def validate(model, val_loader, device, LossTr, config):
             PosEmb11 = model(Pos11)
             PosEmb12 = model(Pos12)
 
-        Labels = torch.arange(PosEmb11.shape[0], device=device)
+        batch_size = PosEmb11.shape[0]
+        labels = torch.arange(batch_size, device=device)
+        combined_labels = torch.cat([labels, labels])
         
-        if config['loss_type'].lower() == 'ntxent':
-            val_loss += LossTr(torch.cat((PosEmb11, PosEmb12), dim=0), torch.cat((Labels, Labels), dim=0)).item()
-        else:  # margin loss
-            # Combine embeddings and labels
-            embeddings = torch.cat((PosEmb11, PosEmb12), dim=0)
-            combined_labels = torch.cat((Labels, Labels), dim=0)
+        positives_mask = torch.eye(batch_size, device=device).bool()
+        combined_positives_mask = torch.cat([positives_mask, positives_mask], dim=1)
 
-            # Get triplets
-            miner = miners.BatchHardMiner()
-            hard_pairs = miner(embeddings, combined_labels)
+        embeddings = torch.cat((PosEmb11, PosEmb12), dim=0)
 
-            # Compute loss
-            val_loss += LossTr(embeddings, combined_labels, hard_pairs).item()
-    
-    
-    cosine_similarity = CosineSimilarity()
+        if miner is not None:
+            miner_output = miner(embeddings, combined_labels)
+        else:
+            miner_output = None
 
-    similarity_pos = cosine_similarity(PosEmb11, PosEmb12).cpu().numpy()
-    similarity_neg = cosine_similarity(PosEmb11, PosEmb11).cpu().numpy()
+        val_loss += LossTr(embeddings, combined_labels, miner_output).item()
+     
+        cosine_similarity = CosineSimilarity()
+        similarity_pos = cosine_similarity(PosEmb11, PosEmb12).cpu().numpy()
+        similarity_neg = cosine_similarity(PosEmb11, PosEmb11).cpu().numpy()
 
-    pos_sim.append( np.diag(similarity_pos))
-    neg_sim.append (similarity_neg[np.triu_indices_from(similarity_neg, k=1)])
-    neg_sim_aug.append (similarity_pos[np.triu_indices_from(similarity_pos, k=1)])
+        pos_sim.append(np.diag(similarity_pos))
+        neg_sim.append(similarity_neg[np.triu_indices_from(similarity_neg, k=1)])
+        neg_sim_aug.append(similarity_pos[np.triu_indices_from(similarity_pos, k=1)])
+
+        # Euclidean distance calculations
+        from torch.nn.functional import pairwise_distance
+        euclidean_distance_pos = pairwise_distance(PosEmb11, PosEmb12).cpu().numpy()
+        euclidean_distance_neg = pairwise_distance(PosEmb11, PosEmb11).cpu().numpy()
+        
+        # Ensure euclidean_distance_neg is 2D
+        if euclidean_distance_neg.ndim == 1:
+            euclidean_distance_neg = euclidean_distance_neg.reshape(1, -1)
+        
+        euc_pos_dist.append(np.diag(euclidean_distance_pos))
+        euc_neg_dist.append(euclidean_distance_neg[np.triu_indices_from(euclidean_distance_neg, k=1)])
+
     torch.cuda.empty_cache()
 
     val_loss /= len(val_loader)
+     # Flatten the lists of arrays into 1D arrays
+    #pos_sim = np.concatenate(pos_sim)
+    #neg_sim = np.concatenate(neg_sim)
+    #neg_sim_aug = np.concatenate(neg_sim_aug)
+    #euc_pos_dist = np.concatenate(euc_pos_dist)
+    #euc_neg_dist = np.concatenate(euc_neg_dist)
 
-    return val_loss, pos_sim, neg_sim, neg_sim_aug
+    return val_loss, pos_sim, euc_pos_dist, euc_neg_dist
+
 
 
 def train_by_models(real_data_dir: str, network_names: list, **kwargs):
@@ -986,37 +1065,49 @@ def load_best_model_for_inference(network_name, config, checkpoints_dir='./check
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # Initialize the model
-    model = ContrastiveNetwork(network_name, feature_dim = config['n_features'], attentive_probing = config['attentive_probing'], device=device)
 
-    # Find the most recent checkpoint directory for this network
-    network_checkpoints = glob.glob(os.path.join(checkpoints_dir, f"*_{network_name}"))
-    print(f"Found checkpoint directories: {network_checkpoints}")
-    
-    if not network_checkpoints:
-        raise ValueError(f"No checkpoints found for {network_name}")
+    if config['contrastive']:
+        model = ContrastiveNetwork(network_name, feature_dim = config['n_features'], attentive_probing = config['attentive_probing'], device=device)
 
-    latest_checkpoint_dir = max(network_checkpoints, key=os.path.getctime)
-    print(f"Latest checkpoint directory: {latest_checkpoint_dir}")
+        # Find the most recent checkpoint directory for this network
+        network_checkpoints = glob.glob(os.path.join(checkpoints_dir, f"*_{network_name}"))
+        print(f"Found checkpoint directories: {network_checkpoints}")
+        
+        if not network_checkpoints:
+            raise ValueError(f"No checkpoints found for {network_name}")
 
-    # Extract date from the latest checkpoint directory
-    checkpoint_date = os.path.basename(latest_checkpoint_dir).split('_')[0]
-    print(f"Extracted checkpoint date: {checkpoint_date}")
+        latest_checkpoint_dir = max(network_checkpoints, key=os.path.getctime)
+        print(f"Latest checkpoint directory: {latest_checkpoint_dir}")
 
-    # Look for the best model in this directory
-    best_model_path = os.path.join(latest_checkpoint_dir, "model_best.pth")
+        # Extract date from the latest checkpoint directory
+        checkpoint_date = os.path.basename(latest_checkpoint_dir).split('_')[0]
+        print(f"Extracted checkpoint date: {checkpoint_date}")
 
-    if not os.path.exists(best_model_path):
-        raise FileNotFoundError(f"Best model not found at {best_model_path}")
+        # Look for the best model in this directory
+        best_model_path = os.path.join(latest_checkpoint_dir, "model_best.pth")
 
-    # Load the state dict
-    state_dict = torch.load(best_model_path, map_location='cpu')
+        if not os.path.exists(best_model_path):
+            raise FileNotFoundError(f"Best model not found at {best_model_path}")
 
-    # Load the state dict into the model
-    try:
-        model.load_state_dict(state_dict, strict = True)
-    except:
-        model.load_state_dict(state_dict, strict = False)
-    # Set the model to evaluation mode
+        # Load the state dict
+        state_dict = torch.load(best_model_path, map_location='cpu')
+
+        # Load the state dict into the model
+        try:
+            model.load_state_dict(state_dict, strict = True)
+        except:
+            model.load_state_dict(state_dict, strict = False)
+
+        # Find the JSON file with a matching pattern
+        json_pattern = os.path.join(latest_checkpoint_dir, f"*{network_name}_image_paths.json")
+
+    elif not config['contrastive'] and network_name == 'ijepa':
+
+        model = load_ijepa_not_contrastive(config)
+   
+        json_pattern = os.path.join(config['ijepa_model_dir'], 'image_paths.json')
+
+
     model.eval()
 
     # Move the model to GPU if available
@@ -1027,8 +1118,6 @@ def load_best_model_for_inference(network_name, config, checkpoints_dir='./check
     model = model.to(device)
 
     # Load dataloaders
-    # Find the JSON file with a matching pattern
-    json_pattern = os.path.join(latest_checkpoint_dir, f"*{network_name}_image_paths.json")
 
     json_files = glob.glob(json_pattern)
     print(f"Found JSON files: {json_files}")
@@ -1201,7 +1290,6 @@ def create_dataloaders(train_paths, val_paths, synthetic_paths, config):
         AUGMENTATION_TRANSFORMS
     ])
 
-    # Validation only uses mandatory transforms
     VAL_TRANSFORMS = TRAIN_TRANSFORMS
 
     # Ensure target_res is 3D
@@ -1222,21 +1310,24 @@ def create_dataloaders(train_paths, val_paths, synthetic_paths, config):
         file_paths=train_paths,
         target_resolution=target_res,
         transforms=TRAIN_TRANSFORMS,
-        num_channels=num_channels
+        num_channels=num_channels,
+        inference=True
     )
 
     val_dataset = ContrastiveDataset(
         file_paths=val_paths,
         target_resolution=target_res,
         transforms=VAL_TRANSFORMS,
-        num_channels=num_channels
+        num_channels=num_channels,
+        inference=True
     )
 
     synth_dataset = ContrastiveDataset(
             file_paths = synthetic_paths,
             target_resolution=target_res,
             transforms=MANDATORY_TRANSFORMS,
-            num_channels=num_channels
+            num_channels=num_channels,
+            inference=True
             )
 
     train_loader = DataLoader(
@@ -1272,7 +1363,7 @@ def create_dataloaders(train_paths, val_paths, synthetic_paths, config):
 def inference_and_save_embeddings(model, device, train_standard_loader, val_standard_loader, synth_loader, network_name, output_dir, config):
     model.eval()
     os.makedirs(output_dir, exist_ok=True)
-
+    visualize_augmentations_contrastive(train_standard_loader)
     def process_dataloader(dataloader, name, model, device, adversarial=False):
         embeddings = []
         embeddings_adv = []
@@ -1294,9 +1385,12 @@ def inference_and_save_embeddings(model, device, train_standard_loader, val_stan
                     current_image_ids = batch['img_id']
 
                     output = model(images)
-                    
+                    if len(output.shape)==3:
+                        output = output.mean(dim=1)
                     if adversarial:
                         output_adv = model(images_adv)
+                        if len(output_adv.shape)==3:
+                            output_adv = output_adv.mean(dim=1)
 
                     if not isinstance(output, torch.Tensor):
                         output = output.logits if hasattr(output, 'logits') else output[0]
@@ -1585,15 +1679,8 @@ def extract_model_name(file_path):
 def prepare_image_for_display(img):
     """Prepare the image for display, handling different formats without rotation."""
     if img.shape[0] == 3 or img.shape[0] == 1:  # (C, H, W) format
-        img = np.transpose(img, (1, 2, 0))
-    
-    if img.shape[-1] == 1:  # Grayscale image
-        img = np.squeeze(img, axis=-1)
-    elif img.shape[-1] == 3:  # Color image
-        pass
-    else:
-        raise ValueError(f"Unexpected image shape: {img.shape}")
-    
+        img = img.T
+    #
     # Normalize the image if it's not in 0-255 range
     if img.max() <= 1.0:
         img = (img * 255).astype(np.uint8)
@@ -1772,7 +1859,7 @@ def visualize_augmentations(dataloader, num_images=6, num_augmentations=5):
     plt.tight_layout()
     plt.savefig('data/image_aug.png')
 
-def visualize_augmentations_contrastive(dataloader, num_images=4, num_augmentations=3):
+def visualize_augmentations_contrastive(dataloader, num_images=20, num_augmentations=4):
     batch = next(iter(dataloader))
     
     fig, axes = plt.subplots(num_images, num_augmentations + 1, figsize=(20, 5 * num_images))

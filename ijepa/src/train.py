@@ -107,6 +107,7 @@ def main(args, resume_preempt=False):
     # -- DATA
     use_gaussian_blur = args['data']['use_gaussian_blur']
     use_horizontal_flip = args['data']['use_horizontal_flip']
+    use_vertical_flip = args['data']['use_vertical_flip']
     use_color_distortion = args['data']['use_color_distortion']
     color_jitter = args['data']['color_jitter_strength']
     # --
@@ -123,6 +124,7 @@ def main(args, resume_preempt=False):
     split_ratio = args['data']['split_ratio']
     image_extension = args['data']['image_extension']
     seed = args['data']['seed']
+    secondary_ids = args['data']['secondary_ids']
     # --
 
     # -- MASK
@@ -148,8 +150,9 @@ def main(args, resume_preempt=False):
     final_lr = args['optimization']['final_lr']
     moco_temp = args['optimization']['temp_moco']
     lambda_loss = args['optimization']['lambda_loss']
+    loss_config = args['optimization']['loss_config']
 
-    # -- LOGGING
+    # -- LOGGINIG
     folder = args['logging']['folder']
     tag = args['logging']['write_tag']
 
@@ -214,6 +217,7 @@ def main(args, resume_preempt=False):
         crop_scale=crop_scale,
         gaussian_blur=use_gaussian_blur,
         horizontal_flip=use_horizontal_flip,
+        vertical_flip=use_vertical_flip,
         color_distortion=use_color_distortion,
         color_jitter=color_jitter)
 
@@ -238,7 +242,8 @@ def main(args, resume_preempt=False):
             unique_image_id=unique_image_id,
             split_ratio=split_ratio,
             image_extension=image_extension,
-            seed=seed
+            seed=seed,
+            secondary_ids=secondary_ids
             )
     ipe = len(unsupervised_loader)
 
@@ -304,6 +309,15 @@ def main(args, resume_preempt=False):
             if (epoch + 1) % checkpoint_freq == 0:
                 torch.save(save_dict, save_path.format(epoch=f'{epoch + 1}'))
 
+    for param in encoder.parameters():
+        param.requires_grad = True
+    for param in predictor.parameters():
+        param.requires_grad = True
+    for param in target_encoder.parameters():
+        param.requires_grad = False
+
+
+
     # -- TRAINING LOOP
     for epoch in range(start_epoch, num_epochs):
         logger.info('Epoch %d' % (epoch + 1))
@@ -312,6 +326,8 @@ def main(args, resume_preempt=False):
         unsupervised_sampler.set_epoch(epoch)
 
         loss_meter = AverageMeter()
+        loss_f1_meter = AverageMeter()
+        loss_mocco_meter = AverageMeter()
         maskA_meter = AverageMeter()
         maskB_meter = AverageMeter()
         time_meter = AverageMeter()
@@ -322,9 +338,9 @@ def main(args, resume_preempt=False):
                 # -- unsupervised imgs
                 imgs = udata['data_pos'].to(device, non_blocking=True)
                 imgs_natural = udata['data'].to(device, non_blocking=True)
-                if itr <=1:
-                    print('normal', imgs.shape, type(imgs), imgs.dtype)
-                    print('target', imgs_natural.shape, type(imgs_natural), imgs_natural.dtype)
+                #if itr <=1:
+                #    print('normal', imgs.shape, type(imgs), imgs.dtype)
+                #    print('target', imgs_natural.shape, type(imgs_natural), imgs_natural.dtype)
                 masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
                 masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
                 return (imgs, imgs_natural,  masks_1, masks_2)
@@ -341,6 +357,7 @@ def main(args, resume_preempt=False):
                     with torch.no_grad():
                         h0 = target_encoder(imgs_natural)
                         h = F.layer_norm(h0, (h0.size(-1),))  # normalize over feature-dim
+                        h0 = h0.mean(dim=1)
                         B = len(h)
                         # -- create targets (masked regions of h)
                         h = apply_masks(h, masks_pred)
@@ -348,10 +365,10 @@ def main(args, resume_preempt=False):
                         return h, h0
 
                 def forward_context():
-                    z0 = encoder(imgs)
-                    z = encoder(imgs, masks_enc)
-                    z = predictor(z, masks_enc, masks_pred)
-                    return z, z0
+                    #z0 = encoder(imgs).mean(dim=1)
+                    z_enc = encoder(imgs, masks_enc)
+                    z = predictor(z_enc, masks_enc, masks_pred)
+                    return z, z_enc
 
                 def loss_fn(z, h, z0, h0):
                     loss = F.smooth_l1_loss(z, h)
@@ -360,45 +377,82 @@ def main(args, resume_preempt=False):
                     loss = AllReduce.apply(loss)
                     return loss
 
-                # Step 1. Forward
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
                     h, h0 = forward_target()
-                    z, z0 = forward_context()
-                    loss = loss_fn(z, h, z0, h0)
+                    z, z_enc = forward_context()
 
-                #  Step 2. Backward & step
+                    # Compute losses separately
+                    f1_loss = F.smooth_l1_loss(z, h)
+                    moco_loss_val = moco_loss(z_enc.mean(dim=1), h0)
+
+                if loss_config == "linear_combination":
+                    # Linear combination mode
+                    total_loss = (1 - lambda_loss) * f1_loss + lambda_loss * moco_loss_val
+                    if use_bfloat16:
+                        scaler.scale(total_loss).backward()
+                    else:
+                        total_loss.backward()
+            
+                elif loss_config == "mixed_backward":
+                    # Mixed backward mode
+                    predictor_params = [p for p in predictor.parameters() if p.requires_grad]
+                    if use_bfloat16:
+                        scaler.scale(f1_loss).backward(inputs=predictor_params, retain_graph=True)
+                    else:
+                        f1_loss.backward(inputs=predictor_params, retain_graph=True)                    
+
+
+                    encoder_loss = (1 - lambda_loss) * f1_loss + lambda_loss * moco_loss_val
+                    encoder_params = [p for p in encoder.parameters() if p.requires_grad]
+                    if use_bfloat16:
+                        scaler.scale(encoder_loss).backward(inputs=encoder_params)
+                    else:
+                        encoder_loss.backward(inputs=encoder_params) 
+                else:
+                    raise ValueError(f"Unknown loss_config: {loss_config}")
+
+                # Optimizer step
                 if use_bfloat16:
-                    scaler.scale(loss).backward()
                     scaler.step(optimizer)
                     scaler.update()
                 else:
-                    loss.backward()
                     optimizer.step()
+
                 grad_stats = grad_logger(encoder.named_parameters())
                 optimizer.zero_grad()
 
-                # Step 3. momentum update of target encoder
                 with torch.no_grad():
                     m = next(momentum_scheduler)
                     for param_q, param_k in zip(encoder.parameters(), target_encoder.parameters()):
                         param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
 
-                return (float(loss), _new_lr, _new_wd, grad_stats)
-            (loss, _new_lr, _new_wd, grad_stats), etime = gpu_timer(train_step)
+                total_loss = (1-lambda_loss) * f1_loss + lambda_loss * moco_loss_val  # for logging purposes
+                return (float(total_loss), float(f1_loss), float(moco_loss_val), _new_lr, _new_wd, grad_stats)
+
+
+
+            (loss, f1_loss, moco_loss_val, _new_lr, _new_wd, grad_stats), etime = gpu_timer(train_step)
+            
             loss_meter.update(loss)
+            loss_f1_meter.update(f1_loss)
+            loss_mocco_meter.update(moco_loss_val)
             time_meter.update(etime)
 
             # -- Logging
             def log_stats():
-                csv_logger.log(epoch + 1, itr, loss, maskA_meter.val, maskB_meter.val, etime)
+                csv_logger.log(epoch + 1, itr, loss, f1_loss, moco_loss_val, maskA_meter.val, maskB_meter.val, etime)
                 if (itr % log_freq == 0) or np.isnan(loss) or np.isinf(loss):
                     logger.info('[%d, %5d] loss: %.3f '
+                                'loss f1: %.3f '
+                                'loss moco: %.3f '
                                 'masks: %.1f %.1f '
                                 '[wd: %.2e] [lr: %.2e] '
                                 '[mem: %.2e] '
                                 '(%.1f ms)'
                                 % (epoch + 1, itr,
                                    loss_meter.avg,
+                                   loss_f1_meter.avg,
+                                   loss_mocco_meter.avg,
                                    maskA_meter.avg,
                                    maskB_meter.avg,
                                    _new_wd,
@@ -406,16 +460,15 @@ def main(args, resume_preempt=False):
                                    torch.cuda.max_memory_allocated() / 1024.**2,
                                    time_meter.avg))
 
-                    if grad_stats is not None:
-                        logger.info('[%d, %5d] grad_stats: [%.2e %.2e] (%.2e, %.2e)'
-                                    % (epoch + 1, itr,
-                                       grad_stats.first_layer,
-                                       grad_stats.last_layer,
-                                       grad_stats.min,
-                                       grad_stats.max))
+                #if grad_stats is not None:
+                #    logger.info('[%d, %5d] grad_stats: [%.2e %.2e] (%.2e, %.2e)'
+                #                % (epoch + 1, itr,
+                #                   grad_stats.first_layer,
+                #                   grad_stats.last_layer,
+                #                   grad_stats.min,
+                #                   grad_stats.max))
 
             log_stats()
-
             assert not np.isnan(loss), 'loss is nan'
 
         # -- Save Checkpoint after every epoch

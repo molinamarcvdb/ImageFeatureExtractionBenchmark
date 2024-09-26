@@ -17,13 +17,17 @@ data:
   
   unique_individual_id: 'Patient ID'
   unique_image_id: 'Filename'
+  secondary_ids:
+    - 'Laterality'
+    - 'Projection'
   split_ratio: 0.8
   image_extension: '.jpeg'
   seed: 42
-  use_color_distortion: false
+  use_color_distortion: false 
 
   use_gaussian_blur: false
-  use_horizontal_flip: false
+  use_horizontal_flip: true
+  use_vertical_flip: true
 logging:
   folder: logs/in2kk_vith14.224-bs.2048-ep.66/
   write_tag: jepa
@@ -52,15 +56,16 @@ meta:
   use_bfloat16: true
 optimization:
   ema:
-  - 0.996
+  - 0.7
   - 1.0
   epochs: 100 
   final_lr: 1.0e-06
   final_weight_decay: 0.4
   ipe_scale: 1.0
   lr: 0.001
-  start_lr: 0.0002
-  warmup: 3
-  weight_decay: 0.04
-  temp_moco: 0.2
-  lambda_loss: 0.5
+  start_lr: 0.002
+  warmup: 0 
+  weight_decay: 0.00004
+  temp_moco: 0.4
+  lambda_loss: 0.8
+  loss_config: 'mixed_backward' # 'mixed_backward'

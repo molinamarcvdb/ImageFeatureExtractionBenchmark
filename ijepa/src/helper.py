@@ -93,7 +93,20 @@ def init_model(
         predictor_embed_dim=pred_emb_dim,
         depth=pred_depth,
         num_heads=encoder.num_heads)
+    
+    from infer import AttentivePooler
 
+    att_pooler = AttentivePooler(
+                num_queries=1,
+                embed_dim=768,
+                num_heads=12,
+                mlp_ratio=4.0,
+                depth=1,
+                init_std=0.02,
+                qkv_bias=True,
+                complete_block=True
+            )
+        
     def init_weights(m):
         if isinstance(m, torch.nn.Linear):
             trunc_normal_(m.weight, std=0.02)

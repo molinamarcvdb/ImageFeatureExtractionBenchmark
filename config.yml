@@ -3,7 +3,7 @@ feature_extraction: false
 eval_only: false
 sing_image_eval: false
 realism_correlation: false 
-privacy_benchmark: true 
+privacy_benchmark: true  
 adversarial_privacy_assesment: false 
 degraded_datasets: false
 # Paths to the real and synthetic datasets
@@ -13,24 +13,27 @@ dataset_info: '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/syntheva/Notebooks/dicom_metad
 
 output_preprocessing: './data/preprocessing/'
 unique_individual_id: 'Patient ID'
+secondary_ids:    
+  - 'Laterality'
+  - 'Projection'
+
 unique_image_id: 'Filename'
 image_extension: '.jpeg'
 seed: 42
 # List of networks to use for feature extraction
 networks:
-  - 'rad_inception'
-  - 'inception'
-  - 'resnet50'
-  - 'rad_resnet50'
-  - 'inceptionresnet'
-  - 'rad_inceptionresnet'
+  #- 'rad_inception'
+  #- 'inception'
+  #- 'resnet50'
+  #- 'rad_resnet50'
+  #- 'inceptionresnet'
+  #- 'rad_inceptionresnet'
   - 'densenet121'
   - 'rad_densenet'
-  - 'clip'
-  - 'rad_clip'
-  - 'rad_dino'
-  - 'dino'
-  - 'inception'
+  #- 'clip'
+  #- 'rad_clip'
+  #- 'rad_dino'
+  #- 'dino'
   #- 'ijepa'
 metrics:
   - fid
@@ -62,23 +65,26 @@ timestamp: '20240822_155631' #'20240821_151647' # for specific features previous
 do_z_score: false
 preprocess_to_npy: True
 # New parameters for privacy benchmark
-n_features: 768
+ijepa_model_dir:  './ijepa/logs/in2kk_vith14.224-bs.2048-ep.66'
+n_features: 128 
 target_resolution: [224, 224]
 split_ratio: 0.8
 num_workers: 4 
 pin_memory: true 
-base_lr: 0.001
-n_epochs: 25
+base_lr: 0.01
+min_lr: 0.00005
+gamma: 0.99 
+n_epochs: 100 
 temperature: 0.5
 save_model_interval: 10
 multi_gpu: true
 loss_type: 'triplet'  # New parameter to choose between 'ntxent' and 'margin'
-margin: 1.0
+margin: 0.05
 swap: false,
-smooth_loss: false,
+smooth_loss: true,
 triplets_per_anchor: 'all'
-unfreeze_epoch: 0 
+unfreeze_epoch: 5 
 downscaling_after_freezing: 10
 attentive_probing: False 
-augmentation_strength: 'strong' # or 'strong'
-
+augmentation_strength: 'weak' # or 'strong'
+contrastive: true 

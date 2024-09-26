@@ -17,6 +17,8 @@ class MocoLoss(nn.Module):
         Output:
             loss
         """
+        #print("q shape:", q.shape)
+        #print("k shape:", k.shape)
         # normalize
         q = nn.functional.normalize(q, dim=1)
         
@@ -24,6 +26,8 @@ class MocoLoss(nn.Module):
             k = nn.functional.normalize(k, dim=1)
             k = concat_all_gather(k)
 
+        #print("q shape after norm:", q.shape)
+        #print("k shape after norm:", k.shape)
         # Einstein sum for batch-wise dot product
         logits = torch.einsum('nc,mc->nm', [q, k]) / self.T
 

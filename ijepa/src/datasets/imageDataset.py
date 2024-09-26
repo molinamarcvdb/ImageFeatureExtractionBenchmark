@@ -87,7 +87,8 @@ def make_contrastive_data(
     unique_image_id=None,
     split_ratio=None,
     image_extension=None,
-    seed=None
+    seed=None,
+    secondary_ids=None
     ):
     
     target_res = (*(target_res, target_res), 1)
@@ -96,6 +97,7 @@ def make_contrastive_data(
             patient_data_dir = root_path,
             patient_info_path = dataset_info,
             patient_id = unique_individual_id,
+            secondary_ids = secondary_ids,
             unique_identifier_col = unique_image_id,
             train_ratio = split_ratio,
             extension = image_extension,
@@ -132,9 +134,9 @@ def make_contrastive_data(
     print(train_dataset, type(train_dataset))
     # Create samplers 
     train_dist_sampler = torch.utils.data.distributed.DistributedSampler(
-                        dataset=train_dataset,
-                        num_replicas=world_size,
-                        rank=rank)
+                            dataset=train_dataset,
+                            num_replicas=world_size,
+                            rank=rank)
 
     val_dist_sampler = torch.utils.data.distributed.DistributedSampler(
                         dataset=val_dataset,
@@ -195,7 +197,7 @@ class ContrastiveDataset(torch.utils.data.Dataset):
         return img_data
 
     def __getitem__(self, index):
-        img = self.process_image(self.paths[index], aug = True)
+        img = self.process_image(self.paths[index])
         img_pos = self.process_image(self.paths[index], aug = True)  # Same image, different augmentation
         # Get a negative sample
         index_neg = np.random.choice(np.delete(np.arange(len(self.paths)), index))
@@ -220,6 +222,7 @@ import pandas as pd
 import polars as pl
 import random
 from collections import defaultdict
+from typing import List
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()
@@ -228,6 +231,7 @@ def create_train_val_split(
         patient_data_dir, 
         patient_info_path,
         patient_id: str,
+        secondary_ids: List,
         unique_identifier_col: str,
         train_ratio=0.8, 
         extension: str = '.jpeg',
@@ -245,15 +249,25 @@ def create_train_val_split(
             if file.endswith((extension)):
                 image_paths.append(os.path.join(patient_data_dir, file))
 
-    total_number_imgs = len(image_paths)
 
     # Read patient info
     df = pd.read_csv(patient_info_path)
     dfl = pl.from_pandas(df)
 
-    # Group images by patient
-    patient_images = dfl.group_by(patient_id).agg(pl.col(unique_identifier_col).alias('image_list')).sort(by=patient_id)
-    
+    # Group images by patient_id
+    extended_ids = [patient_id]
+    extended_ids.extend(secondary_ids)
+    unique_images = (
+        dfl.sort(unique_identifier_col)  # Sort to ensure consistent selection of the "first" image
+           .group_by(extended_ids)
+           .agg(pl.col(unique_identifier_col).first().alias('unique_image'))
+    )
+# Group the unique images by patient
+    patient_images = (
+        unique_images.group_by(patient_id)
+                     .agg(pl.col('unique_image').alias('image_list'))
+                     .sort(patient_id)
+    )
     # Create dictionary of patient to image paths
     patient_to_images = defaultdict(list)
     for patient, images in sorted(zip(patient_images[patient_id], patient_images['image_list'])):
@@ -262,9 +276,17 @@ def create_train_val_split(
             if full_path in image_paths:
                 patient_to_images[patient].append(full_path)
 
+        
     # Get the list of patients and shuffle it
     patients = sorted(list(patient_to_images.keys()))
     random.Random(seed).shuffle(patients)
+
+    imgs = []
+
+    for patient in patients:
+        imgs.extend(patient_to_images[patient])
+
+    total_number_imgs = len(imgs)
 
     train_paths: list[str] = []
     val_paths: list[str] = []
@@ -291,4 +313,3 @@ def create_train_val_split(
     logger.info(f'Out of all {len(patients)} individuals, {patient_count} resulted in training set')
     
     return train_paths, val_paths
-

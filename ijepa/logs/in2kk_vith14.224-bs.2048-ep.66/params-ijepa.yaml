@@ -11,13 +11,17 @@ data:
   num_workers: 10
   pin_mem: true
   root_path: /mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/output_images_512_all
+  secondary_ids:
+  - Laterality
+  - Projection
   seed: 42
   split_ratio: 0.8
   unique_image_id: Filename
   unique_individual_id: Patient ID
   use_color_distortion: false
   use_gaussian_blur: false
-  use_horizontal_flip: false
+  use_horizontal_flip: true
+  use_vertical_flip: true
 logging:
   folder: logs/in2kk_vith14.224-bs.2048-ep.66/
   write_tag: jepa
@@ -46,15 +50,16 @@ meta:
   use_bfloat16: true
 optimization:
   ema:
-  - 0.996
+  - 0.7
   - 1.0
   epochs: 100
   final_lr: 1.0e-06
   final_weight_decay: 0.4
   ipe_scale: 1.0
-  lambda_loss: 0.5
+  lambda_loss: 0.8
+  loss_config: mixed_backward
   lr: 0.001
-  start_lr: 0.0002
-  temp_moco: 0.2
-  warmup: 3
-  weight_decay: 0.04
+  start_lr: 0.002
+  temp_moco: 0.4
+  warmup: 0
+  weight_decay: 4.0e-05
