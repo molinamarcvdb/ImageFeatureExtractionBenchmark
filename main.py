@@ -279,8 +279,8 @@ def main():
                 # and between train_adversarial and train_standard
                 if os.path.exists(embeddings_file):
                     print(f"Processing {network_name}")
-                    stats = compute_distances_and_plot(embeddings_file, output_dir, config, methods=['euclidean', 'spearman'])
-                    find_and_plot_similar_images(embeddings_file, train_loader, val_loader, synth_loader, output_dir, plot_percentage=1)
+                    stats = compute_distances_and_plot(embeddings_file, output_dir, config, methods=['euclidean', 'sqeuclidean', 'pearson','spearman' ,'cosine'])
+                    #find_and_plot_similar_images(embeddings_file, train_loader, val_loader, synth_loader, output_dir, plot_percentage=1)
                     
                     print(f"Statistics for {network_name}:")
                     for key, value in stats.items():

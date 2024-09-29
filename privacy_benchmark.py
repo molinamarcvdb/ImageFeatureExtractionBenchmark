@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import time
 import torchvision.models as models
 from tensorflow.keras.applications import InceptionV3, ResNet50, InceptionResNetV2, DenseNet121
 from transformers import CLIPProcessor, CLIPModel, AutoModel, AutoImageProcessor
@@ -51,6 +52,7 @@ import sys
 import traceback
 import logging
 from utils import load_ijepa_not_contrastive
+from losses import InfoNCE
 
 def setup_logging(dire):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -583,16 +585,32 @@ def setup_training(root_dir, network_name, **kwargs):
     Returns:
         DataLoader, DataLoader, torch.device: Training DataLoader, Validation DataLoader, and device.
     """
-    
+
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+    # Set environment variables to help with NCCL issues
+    os.environ['NCCL_IB_DISABLE'] = '1'
+    os.environ['NCCL_P2P_DISABLE'] = '1'
+    os.environ['NCCL_SOCKET_NTHREADS'] = '8'
+    os.environ['NCCL_NSOCKS_PERTHREAD'] = '4'
+    os.environ['NCCL_SOCKET_IFNAME'] = 'eth0'  
     
     local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
     rank = int(os.environ["LOCAL_RANK"])
 
     # Set up DistributedDataParallel
-    dist.init_process_group("nccl", rank=rank, world_size=local_world_size)
+    try:
+        dist.init_process_group("nccl", rank=rank, world_size=local_world_size)
+        dist.barrier()
+    except RuntimeError as e:
+        print(e)
+        dist.destroy_process_group()
+        time.sleep(60)
+        dist.init_process_group("nccl", rank=rank, world_size=local_world_size)
+        dist.barrier()
+     
     torch.cuda.set_device(rank) 
-    #dist.barrier()
-    
     
     if rank == 0:
 
@@ -606,7 +624,7 @@ def setup_training(root_dir, network_name, **kwargs):
         # Generate timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         # Create a unique directory name combining timestamp and network name
-        run_name = f"{timestamp}_{network_name}"
+        run_name = f"{timestamp}_{config['loss_type']}_{network_name}"
         wandb.init(project="privacy_benchmark", name=run_name, config=config)
 
         # Set up checkpoint directory
@@ -683,8 +701,8 @@ def setup_training(root_dir, network_name, **kwargs):
     device = rank % torch.cuda.device_count()
 
 
-    if 'clip' in network_name:
-        config['batch_size'] = 64 # Define model
+    if 'clip' in network_name or 'dino' in network_name:
+        config['batch_size'] = 32
     try:
         
         model = ContrastiveNetwork(network_name, feature_dim = config['n_features'], attentive_probing = config['attentive_probing'], device = device)
@@ -736,22 +754,6 @@ def setup_training(root_dir, network_name, **kwargs):
         tio.RandomMotion(degrees=5, translation=5, p=0.2),
     ])
 
-
-
-    #AUGMENTATION_TRANSFORMS = tio.Compose([
-    #    Custom2DRotation(degrees=20, p=0.7),
-    #    tio.RandomAffine(
-    #        degrees=(-0, 0),  # Reduced rotation range
-    #        scales=(0.8, 1.2),  # Tighter scaling range
-    #        image_interpolation='bspline',
-    #        p=0.7,
-    #    ),
-    #    tio.RandomFlip(axes=(2,)),
-    #    tio.RandomNoise(std=(0, 0.02)),
-    #    tio.RandomBlur(std=(0, 0.5)),
-    #    tio.RandomMotion(degrees=5, translation=5),
-    #   
-    #])
 # Combine mandatory and augmentation transforms for training
     TRAIN_TRANSFORMS = tio.Compose([
         MANDATORY_TRANSFORMS,
@@ -835,6 +837,8 @@ def setup_training(root_dir, network_name, **kwargs):
             smooth_loss=config['smooth_loss'],
             triplets_per_anchor=config['triplets_per_anchor']
         )
+    elif config['loss_type'].lower() == 'infonce':
+        LossTr = InfoNCE(temperature=config['temperature'], reduction='none', negative_mode='unpaired')
     else:
         raise ValueError(f"Unsupported loss type: {config['loss_type']}. Choose 'ntxent' or 'triplet'.")
  
@@ -854,7 +858,9 @@ def setup_training(root_dir, network_name, **kwargs):
             if epoch == config['unfreeze_epoch']:
                 print(f"Unfreezing the entire network at epoch {epoch}")
                 unfreeze_backbone(model)
-                #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['n_epochs'], eta_min=config['base_lr']/config['downscaling_after_freezing'])
+                if 'dino' in network_name or 'clip' in network_name:
+                    optimizer = torch.optim.AdamW(model.parameters(), lr=config['base_lr']/config['downscaling_after_freezing'])
+                    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, config['gamma'])
 
             epoch_loss = train_epoch(config['batch_size'], model, train_loader, optimizer, scheduler, device, LossTr, epoch, config, miner)
 
@@ -895,6 +901,8 @@ def setup_training(root_dir, network_name, **kwargs):
         wandb.finish()
         dist.barrier()
         dist.destroy_process_group()
+        time.sleep(60)
+
     except Exception as e:
         setup_logging(ckpt_dir) 
         error_msg = f"An error occurred:\n{traceback.format_exc()}"
@@ -957,8 +965,19 @@ def train_epoch(batch_size, model, train_loader, optimizer, scheduler, device, L
             miner_output = None
 
         # Compute loss based on the specified loss type
-        LossPos1 = LossTr(embeddings, combined_labels, miner_output)
-       
+        if config['loss_type'].lower() == 'infonce':
+            # For InfoNCE, we need to handle positive and negative pairs separately
+            anchors, positives, negatives = miner_output
+            anchor_embeddings = embeddings[anchors]
+            positive_embeddings = embeddings[positives]
+            negative_embeddings = embeddings[negatives].view(len(anchors), -1, embeddings.shape[1])
+            negative_embeddings = negative_embeddings.reshape(-1, embeddings.shape[1]) 
+            # Compute InfoNCE loss
+            loss = LossTr(anchor_embeddings, positive_embeddings, negative_embeddings)
+            LossPos1 = loss.mean()  # Take mean of all losses
+        else:
+            # For other loss types, use the existing logic
+            LossPos1 = LossTr(embeddings, combined_labels, miner_output) 
      
         LossPos1.backward()
         optimizer.step()
@@ -996,8 +1015,18 @@ def validate(model, val_loader, device, LossTr, config, miner=None):
         else:
             miner_output = None
 
-        val_loss += LossTr(embeddings, combined_labels, miner_output).item()
-     
+        if config['loss_type'].lower() == 'infonce':
+            anchors, positives, negatives = miner_output
+            anchor_embeddings = embeddings[anchors]
+            positive_embeddings = embeddings[positives]
+            negative_embeddings = embeddings[negatives].view(len(anchors), -1, embeddings.shape[1])
+            negative_embeddings = negative_embeddings.reshape(-1, embeddings.shape[1]) 
+            loss = LossTr(anchor_embeddings, positive_embeddings, negative_embeddings)
+            val_loss += loss.mean().item()
+        else:
+            val_loss += LossTr(embeddings, combined_labels, miner_output).item() 
+        
+
         cosine_similarity = CosineSimilarity()
         similarity_pos = cosine_similarity(PosEmb11, PosEmb12).cpu().numpy()
         similarity_neg = cosine_similarity(PosEmb11, PosEmb11).cpu().numpy()
@@ -1070,7 +1099,7 @@ def load_best_model_for_inference(network_name, config, checkpoints_dir='./check
         model = ContrastiveNetwork(network_name, feature_dim = config['n_features'], attentive_probing = config['attentive_probing'], device=device)
 
         # Find the most recent checkpoint directory for this network
-        network_checkpoints = glob.glob(os.path.join(checkpoints_dir, f"*_{network_name}"))
+        network_checkpoints = glob.glob(os.path.join(checkpoints_dir, f"*{config['loss_type']}_{network_name}"))
         print(f"Found checkpoint directories: {network_checkpoints}")
         
         if not network_checkpoints:
@@ -1425,7 +1454,7 @@ def inference_and_save_embeddings(model, device, train_standard_loader, val_stan
         print('Processing synthetic')
         synth_standard_embeddings, synth_standard_ids, _, _ = process_dataloader(synth_loader, "synth_standard", model, device, adversarial = False)
 
-        output_file = os.path.join(output_dir, f"{network_name}_embeddings_aug_{config['augmentation_strength']}.h5")
+        output_file = os.path.join(output_dir, f"{network_name}_embeddings_aug_{config['augmentation_strength']}_{config['loss_type']}.h5")
         with h5py.File(output_file, 'w') as f:
             f.create_dataset('train_standard/embeddings', data=train_standard_embeddings)
             f.create_dataset('train_standard/image_ids', data=np.array(train_standard_ids, dtype=h5py.special_dtype(vlen=str)))
@@ -1467,6 +1496,10 @@ def compute_spearman_correlation(X, Y):
     Y_ranked = rank_data(Y)
     return compute_pearson_correlation(X_ranked, Y_ranked)
 
+def compute_cosine_similarity(X, Y):
+    return 1 - cdist(X, Y, metric='cosine')
+
+
 def compute_distances_and_plot(embeddings_file, output_dir, config, methods='euclidean'):
     print(f"Loading embeddings from {embeddings_file}")
     with h5py.File(embeddings_file, 'r') as f:
@@ -1488,19 +1521,33 @@ def compute_distances_and_plot(embeddings_file, output_dir, config, methods='euc
     print(f"Computing distances/correlations for methods: {methods}")
 
     results = {}
+    adv_results = {}
+
     for method in methods:
         print(f"\nProcessing method: {method}")
-        if method in ['euclidean', 'sqeuclidean']:
-            print(f"Computing {method} distances")
-            train_val_distances = cdist(train_standard_embeddings, val_standard_embeddings, metric=method)
-            adversarial_train_distances = cdist(train_adversarial_embeddings, train_standard_embeddings, metric=method)
-            adversarial_val_distances = cdist(val_adversarial_embeddings, val_standard_embeddings, metric=method)
-            synth_train_distances = cdist(synth_standard_embeddings, train_standard_embeddings, metric=method)
+        if method in ['euclidean', 'sqeuclidean', 'cosine']:
+            print(f"Computing {method} distances/similarities")
+            if method == 'cosine':
+                train_val_distances = compute_cosine_similarity(train_standard_embeddings, val_standard_embeddings)
+                adversarial_train_distances = compute_cosine_similarity(train_adversarial_embeddings, train_standard_embeddings)
+                adversarial_val_distances = compute_cosine_similarity(val_adversarial_embeddings, val_standard_embeddings)
+                synth_train_distances = compute_cosine_similarity(synth_standard_embeddings, train_standard_embeddings)
+            else:
+                train_val_distances = cdist(train_standard_embeddings, val_standard_embeddings, metric=method)
+                adversarial_train_distances = cdist(train_adversarial_embeddings, train_standard_embeddings, metric=method)
+                adversarial_val_distances = cdist(val_adversarial_embeddings, val_standard_embeddings, metric=method)
+                synth_train_distances = cdist(synth_standard_embeddings, train_standard_embeddings, metric=method)
 
-            min_train_val_distances = np.min(train_val_distances, axis=1)
-            min_adversarial_train_distances = np.min(adversarial_train_distances, axis=1)
-            min_adversarial_val_distances = np.min(adversarial_val_distances, axis=1)
-            min_synth_train_distances = np.min(synth_train_distances, axis=1)
+            if method == 'cosine':
+                min_train_val_distances = np.max(train_val_distances, axis=1)
+                min_adversarial_train_distances = np.max(adversarial_train_distances, axis=1)
+                min_adversarial_val_distances = np.max(adversarial_val_distances, axis=1)
+                min_synth_train_distances = np.max(synth_train_distances, axis=1)
+            else:
+                min_train_val_distances = np.min(train_val_distances, axis=1)
+                min_adversarial_train_distances = np.min(adversarial_train_distances, axis=1)
+                min_adversarial_val_distances = np.min(adversarial_val_distances, axis=1)
+                min_synth_train_distances = np.min(synth_train_distances, axis=1)
 
             print(f"Distance shapes: train_val={min_train_val_distances.shape}, "
                   f"adversarial_train={min_adversarial_train_distances.shape}, "
@@ -1513,6 +1560,8 @@ def compute_distances_and_plot(embeddings_file, output_dir, config, methods='euc
                 'adversarial_val': min_adversarial_val_distances,
                 'synth_train': min_synth_train_distances
             }
+
+
 
         elif method in ['pearson', 'spearman']:
             print(f"Computing {method} correlation")
@@ -1539,55 +1588,69 @@ def compute_distances_and_plot(embeddings_file, output_dir, config, methods='euc
                 'adversarial_val': adversarial_val_corr,
                 'synth_train': synth_train_corr
             }
-    # Selected how many copy candidates are found
-    method = methods[0]
-    ndpctl = np.percentile(results[method]['train_val'], 2)
-    ndpctl_high = np.percentile(results[method]['train_val'], 98) 
-
-    adv_train_detection_count = 0
-    adv_val_detection_count = 0 
-
-    total_adv_train = len(results[method]['adversarial_train'])
-    total_adv_val = len(results[method]['adversarial_val'])
-
-    for dist in results[method]['adversarial_train']:
+# Compute detection ratios and Wasserstein distances for each method
         if method in ['euclidean', 'sqeuclidean']:
-            if dist < ndpctl:
-                adv_train_detection_count += 1
+            ndpctl = np.percentile(results[method]['train_val'], 2)
+            ndpctl_high = np.percentile(results[method]['train_val'], 98)
+        elif method == 'cosine':
+            ndpctl = np.percentile(results[method]['train_val'], 98)
+            ndpctl_high = np.percentile(results[method]['train_val'], 2)
         else:
+            ndpctl = np.percentile(results[method]['train_val'], 2)
+            ndpctl_high = np.percentile(results[method]['train_val'], 98)
 
-            if dist > ndpctl_high:
-                adv_train_detection_count += 1
+        adv_train_detection_count = 0
+        adv_val_detection_count = 0 
 
-    for dist in results[method]['adversarial_val']:
-        if method in ['euclidean', 'sqeuclidean']:
-            if dist < ndpctl:
-                adv_val_detection_count += 1
-        else:
-            if dist > ndpctl_high:
-                adv_val_detection_count += 1
+        total_adv_train = len(results[method]['adversarial_train'])
+        total_adv_val = len(results[method]['adversarial_val'])
 
-    dist_trval_synth = wasserstein_distance(results[method]['synth_train'], results[method]['train_val'])
-    dist_adv_train_trval = wasserstein_distance(results[method]['adversarial_train'], results[method]['train_val'])
-    dist_adv_val_trval = wasserstein_distance(results[method]['adversarial_val'], results[method]['train_val'])
+        for dist in results[method]['adversarial_train']:
+            if method in ['euclidean', 'sqeuclidean']:
+                if dist < ndpctl:
+                    adv_train_detection_count += 1
+            elif method == 'cosine':
+                if dist > ndpctl:
+                    adv_train_detection_count += 1
+            else:
+                if dist > ndpctl_high:
+                    adv_train_detection_count += 1
+
+        for dist in results[method]['adversarial_val']:
+            if method in ['euclidean', 'sqeuclidean']:
+                if dist < ndpctl:
+                    adv_val_detection_count += 1
+            elif method == 'cosine':
+                if dist > ndpctl:
+                    adv_val_detection_count += 1
+            else:
+                if dist > ndpctl_high:
+                    adv_val_detection_count += 1
+
+        dist_trval_synth = wasserstein_distance(results[method]['synth_train'], results[method]['train_val'])
+        dist_adv_train_trval = wasserstein_distance(results[method]['adversarial_train'], results[method]['train_val'])
+        dist_adv_val_trval = wasserstein_distance(results[method]['adversarial_val'], results[method]['train_val'])
+        
+        detected_adv_train_pct = adv_train_detection_count / total_adv_train
+        detected_adv_val_pct = adv_val_detection_count / total_adv_val
+        
+        adv_results[method] = {
+            'wasserstein_1d_train_val_train_synth': float(dist_trval_synth),
+            'wasserstein_1d_train_val_train_train_adv': float(dist_adv_train_trval),
+            'wasserstein_1d_train_val_train_val_adv': float(dist_adv_val_trval),
+            'detection_ratio_train': float(detected_adv_train_pct),
+            'detection_ratio_val': float(detected_adv_val_pct)
+        }
+
+    # Save all results to a single JSON file
+    json_file_path = os.path.join(output_dir, os.path.basename(embeddings_file).replace('.h5', f"aug_{config['augmentation_strength']}_{config['loss_type']}_results.json"))
     
-    detected_adv_train_pct = adv_train_detection_count / total_adv_train
-    detected_adv_val_pct = adv_val_detection_count / total_adv_val
-    
-    adv_results = {
-            'wasserstein_1d_train_val_train_synth': dist_trval_synth,
-            'wasserstein_1d_train_val_train_train_adv': dist_adv_train_trval,
-            'wasserstein_1d_train_val_train_val_adv': dist_adv_val_trval,
-            'detection_ratio_train': detected_adv_train_pct,
-            'detection_ratio_val': detected_adv_val_pct
-            }
-
-    json_file_path = os.path.join(output_dir, os.path.basename(embeddings_file).replace('.h5', f"aug_{config['augmentation_strength']}_results.json"))
-
     with open(json_file_path, 'w') as json_file:
-        json.dump(adv_results, json_file)
+        json.dump(adv_results, json_file, indent=2)
 
+    print(f"Results saved to {json_file_path}")
     print("\nPlotting results")
+    
     n_methods = len(methods)
 
     fig, axs = plt.subplots(n_methods, 1, figsize=(12, 10*n_methods), dpi=300)
@@ -1613,8 +1676,8 @@ def compute_distances_and_plot(embeddings_file, output_dir, config, methods='euc
 
         # Add a text box with statistics
     plt.tight_layout()
-    plot_file = os.path.join(output_dir, os.path.basename(embeddings_file).replace('.h5', f"_aug_{config['augmentation_strength']}_{'-'.join(methods)}_distribution.png"))
-    plt.savefig(plot_file, bbox_inches='tight')
+    plot_file = os.path.join(output_dir, os.path.basename(embeddings_file).replace('.h5', f"_aug_{config['augmentation_strength']}_{'-'.join(methods)}_{config['loss_type']}_distribution.png"))
+    plt.savefig(plot_file, bbox_inches='tight', dpi = 600)
     plt.close()
     print(f"Distribution plot saved to {plot_file}")
 

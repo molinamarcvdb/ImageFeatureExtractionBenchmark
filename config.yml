@@ -3,8 +3,8 @@ feature_extraction: false
 eval_only: false
 sing_image_eval: false
 realism_correlation: false 
-privacy_benchmark: true  
-adversarial_privacy_assesment: false 
+privacy_benchmark: false 
+adversarial_privacy_assesment: true 
 degraded_datasets: false
 # Paths to the real and synthetic datasets
 real_dataset_path: '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/output_images_512_all'
@@ -22,18 +22,18 @@ image_extension: '.jpeg'
 seed: 42
 # List of networks to use for feature extraction
 networks:
-  #- 'rad_inception'
-  #- 'inception'
-  #- 'resnet50'
-  #- 'rad_resnet50'
-  #- 'inceptionresnet'
-  #- 'rad_inceptionresnet'
+  - 'rad_inception'
+  - 'inception'
+  - 'resnet50'
+  - 'rad_resnet50'
+  - 'inceptionresnet'
+  - 'rad_inceptionresnet'
   - 'densenet121'
   - 'rad_densenet'
-  #- 'clip'
-  #- 'rad_clip'
-  #- 'rad_dino'
-  #- 'dino'
+  - 'clip'
+  - 'rad_clip'
+  - 'rad_dino'
+  - 'dino'
   #- 'ijepa'
 metrics:
   - fid
@@ -78,13 +78,18 @@ n_epochs: 100
 temperature: 0.5
 save_model_interval: 10
 multi_gpu: true
-loss_type: 'triplet'  # New parameter to choose between 'ntxent' and 'margin'
+loss_type: 'infonce'  # New parameter to choose between 'ntxent' and 'margin'
 margin: 0.05
 swap: false,
 smooth_loss: true,
 triplets_per_anchor: 'all'
 unfreeze_epoch: 5 
-downscaling_after_freezing: 10
+downscaling_after_freezing: 200
 attentive_probing: False 
 augmentation_strength: 'weak' # or 'strong'
-contrastive: true 
+contrastive: true
+ema_momentum: 0.99
+ema_momentum_end: 1.0
+projection_dim: 128
+prediction_dim: 128
+feature_dim: 128

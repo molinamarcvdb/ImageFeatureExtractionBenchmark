@@ -1,1 +1,1 @@
-{"wasserstein_1d_train_val_train_synth": 3352.8829722890678, "wasserstein_1d_train_val_train_train_adv": 4985.736682799932, "wasserstein_1d_train_val_train_val_adv": 4516.022046271223, "detection_ratio_train": 0.40230298668585823, "detection_ratio_val": 0.40431654676258993}
+{"wasserstein_1d_train_val_train_synth": 5.81048109668387, "wasserstein_1d_train_val_train_train_adv": 15.275214687205109, "wasserstein_1d_train_val_train_val_adv": 14.526083242080839, "detection_ratio_train": 0.41705649514213744, "detection_ratio_val": 0.3841726618705036}

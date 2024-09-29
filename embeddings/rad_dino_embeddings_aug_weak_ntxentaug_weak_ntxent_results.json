@@ -1,0 +1,37 @@
+{
+  "euclidean": {
+    "wasserstein_1d_train_val_train_synth": 0.3571957669582072,
+    "wasserstein_1d_train_val_train_train_adv": 1.0430691607706304,
+    "wasserstein_1d_train_val_train_val_adv": 0.9313886688946786,
+    "detection_ratio_train": 0.22921914357682618,
+    "detection_ratio_val": 0.2316546762589928
+  },
+  "sqeuclidean": {
+    "wasserstein_1d_train_val_train_synth": 2.5218655249309343,
+    "wasserstein_1d_train_val_train_train_adv": 6.391256047877999,
+    "wasserstein_1d_train_val_train_val_adv": 5.682202054903789,
+    "detection_ratio_train": 0.22921914357682618,
+    "detection_ratio_val": 0.2316546762589928
+  },
+  "pearson": {
+    "wasserstein_1d_train_val_train_synth": 0.005018220159651487,
+    "wasserstein_1d_train_val_train_train_adv": 0.004454896993905031,
+    "wasserstein_1d_train_val_train_val_adv": 0.0014601995638064348,
+    "detection_ratio_train": 0.005037783375314861,
+    "detection_ratio_val": 0.012949640287769784
+  },
+  "spearman": {
+    "wasserstein_1d_train_val_train_synth": 0.006937517308816974,
+    "wasserstein_1d_train_val_train_train_adv": 0.005628058402100379,
+    "wasserstein_1d_train_val_train_val_adv": 0.001985137480775878,
+    "detection_ratio_train": 0.0035984166966534724,
+    "detection_ratio_val": 0.02014388489208633
+  },
+  "cosine": {
+    "wasserstein_1d_train_val_train_synth": 0.02270569766931899,
+    "wasserstein_1d_train_val_train_train_adv": 0.05666726440878432,
+    "wasserstein_1d_train_val_train_val_adv": 0.04911861661054219,
+    "detection_ratio_train": 0.1950341849586182,
+    "detection_ratio_val": 0.1971223021582734
+  }
+}
