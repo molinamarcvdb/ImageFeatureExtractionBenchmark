@@ -50,9 +50,9 @@ def preprocess_images(images, processor, target_size=None, preprocess_fn=None):
 def extract_features(network_name, model, images, processor=None, target_size=None, preprocess_fn=None):
     inputs = preprocess_images(images, processor, target_size, preprocess_fn)
     with torch.no_grad():
-        if network_name.lower() in ["clip", "med_clip"]:
+        if network_name.lower() in ["clip", "rad_clip"]:
             features = model.get_image_features(inputs).cpu().numpy()
-        elif network_name.lower() in ["rad-dino", 'dinov2']:
+        elif network_name.lower() in ["rad_dino", 'dino']:
             outputs = model(inputs)
             features = outputs.pooler_output.cpu().numpy()
         else:
@@ -99,7 +99,7 @@ def initialize_model(network_name):
         model = InceptionResNetV2(weights=rad_imagenet_dict[network_name], include_top=False, pooling='avg')
         target_size = (299, 299)
         preprocess_fn = inception_resnet_preprocess
-    elif network_name.lower() == "densenet":
+    elif network_name.lower() == "densenet121":
         model = DenseNet121(weights='imagenet', include_top=False, pooling='avg')
         target_size = (224, 224)
         preprocess_fn = densenet_preprocess

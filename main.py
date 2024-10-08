@@ -188,11 +188,11 @@ def main():
             
             # Evaluate metrics
             evaluate_metrics(real_features_dir, synthetic_features_dir, network_name, num_sets, data_dir, metrics)
-
+    
     elif config['eval_only']:
 
         for network_name in networks:
-            print(f"Evaluating metrics for network: {network_name}")
+            print(f"Evaluating metrics for network: {network_name}")        
             
             # Prepare directories
             features_dir = os.path.join('data', 'features', timestamp, network_name)
@@ -206,41 +206,28 @@ def main():
 
         output_dir = os.path.join('data', 'features', timestamp)
         main_single_metric_eval(synthetic_dataset_path, real_dataset_path, output_dir)
-        
+     
     if config['realism_correlation']:
 
         if config['timestamp'] is not None: timestamp = config['timestamp']
 
         # Azure to local image path linking
-        grouped_data = link_azure_local(config['jsonl_path'])
+        grouped_data = link_azure_local(config)
         
         # Function to obtian only realism scores and file names and output z_score normalization
         mean_realism_z_scored = realism_handling(grouped_data)
-   
+
         # Record of each image linking it with the local_path
         # All images sets should contain the same images only iterating for first network
         net_sets_dict = get_sets_content(timestamp)
 
-        dict_sets_realism = get_realism_set_dict(grouped_data, net_sets_dict, mean_realism_z_scored, do_z_score)
-        # Get realism dictioanry as qualitative metric in dict format
-        #dict_sets_realism = get_realism_set_dict(grouped_data, net_sets_dict)
-        #dict_sets_realism = {
-        #    1: [72, 50, 50, 22, 50, 22, 50, 22, 50, 22, 50, 22, 50, 23], 
-        #    2: [50, 79, 67, 30, 50, 50, 22, 50, 22, 50, 50, 50, 22,  23], 
-        #    3: [4, 78, 23, 45, 67, 20, 50, 22, 50, 22, 1, 50, 1, 50 , 23], 
-        #    4: [4, 78, 23, 45, 67, 50, 50, 22, 50, 22, 1, 50, 1, 50 , 23], 
-        #    5: [4, 78, 23, 45, 67, 40, 50, 22, 50, 22, 1, 50, 1, 50 , 23], 
-        #    6: [4, 78, 23, 45, 67, 50, 50, 22, 50, 22, 1, 50, 1, 50 , 23], 
-        #    7: [4, 78, 23, 25, 67, 50, 50, 22, 50, 22, 1, 50, 1, 50 , 23], 
-        #    8: [4, 78, 23, 45, 67, 50, 50, 22, 40, 22, 1, 50, 1, 50 , 23], 
-        #    9: [4, 78, 23, 45, 67, 50, 50, 22,         50, 22, 90, 50, 1, 50 , 23], 
-        #    10: [4, 78, 23, 45, 67, 10, 50, 22, 50, 22, 1, 50, 1, 100 , 23]
-        #}
-
-        print(dict_sets_realism)
+        dict_sets_realism, dict_sets_her = get_realism_set_dict(grouped_data, net_sets_dict, mean_realism_z_scored, do_z_score, config['model_to_seek'])
+    
         #Set based correlationa analyses of distribution-based metrics
-        realism_corr_net(dict_sets_realism, metrics, timestamp)
+        realism_corr_net(dict_sets_realism, metrics, timestamp, 'realism')
+        realism_corr_net(dict_sets_her, metrics, timestamp, 'human_error_rate')
 
+             
         #COmpute correlations of single image metric NR and FR with human judgement
         output_dir = os.path.join('data', 'features', timestamp)
         compute_ground_truth_correlations(output_dir, mean_realism_z_scored, do_z_score)
@@ -263,6 +250,7 @@ def main():
                     logging.error(error_msg)
                     
                     raise
+
     if config.get('adversarial_privacy_assesment', False):
 
         output_dir = './embeddings'
@@ -274,13 +262,12 @@ def main():
 
                 # Perform inference and save embeddings
                 embeddings_file = inference_and_save_embeddings(model, device, train_loader,  val_loader, synth_loader, network_name, output_dir, config)
-                #embeddings_file = '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/embeddings/rad_densenet_embeddings_aug_weak.h5'
                 # Compute MSD between train_standard and val_standard (baseline)
                 # and between train_adversarial and train_standard
                 if os.path.exists(embeddings_file):
                     print(f"Processing {network_name}")
-                    stats = compute_distances_and_plot(embeddings_file, output_dir, config, methods=['euclidean', 'sqeuclidean', 'pearson','spearman' ,'cosine'])
-                    #find_and_plot_similar_images(embeddings_file, train_loader, val_loader, synth_loader, output_dir, plot_percentage=1)
+                    stats = compute_distances_and_plot(embeddings_file, output_dir, config, ['braycurtis', 'euclidean'])
+                    find_and_plot_similar_images(embeddings_file, train_loader, val_loader, synth_loader, output_dir, plot_percentage=1)
                     
                     print(f"Statistics for {network_name}:")
                     for key, value in stats.items():

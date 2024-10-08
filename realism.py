@@ -16,21 +16,33 @@ def realism_handling(data):
                   contain the realism scores for each JSONL file, normalized Z-scores,
                   and averaged Z-scores.
     """
+    def get_conf_mat_val(response_real, category):
+        if response_real and 'real' in category:
+            return 'TN'
+        elif response_real and 'synth' in category:
+            return 'FN'
+        elif not response_real and 'real' in category:
+            return 'FP'
+        elif not response_real and 'synth' in category:
+            return 'TP'
+        else:
+            raise f'Something went wrong obtaining the confusion matrix {response_real}, {category}'
 
     def extract_realism_scores(single_data):
         """Helper function to extract realism scores from a single dict of dicts."""
         realism_scores = {}
-
+        conf_mat_scores = {}
         for key, value in single_data.items():
             # Extract the local_path (filename) and realism_score
             filename = value.get('local_path')
             realism_score = value.get('realism_score')
-
+            conf_matrix_val = get_conf_mat_val(bool(value.get('is_real')), value.get('category'))
             # Use the filename as the key and realism score as the value
             if filename is not None:
                 realism_scores[os.path.basename(filename)] = realism_score
+                conf_mat_scores[os.path.basename(filename)] = conf_matrix_val
 
-        return realism_scores
+        return realism_scores, conf_mat_scores
 
     # Handle multiple JSONL files (list of dict of dicts)
     if isinstance(data, list):
@@ -38,8 +50,9 @@ def realism_handling(data):
 
         for idx, single_data in enumerate(data):
             # Extract realism scores for each JSONL file and store them with a unique column name
-            realism_scores = extract_realism_scores(single_data)
+            realism_scores, conf_mat_scores  = extract_realism_scores(single_data)
             combined_realism_scores[f'Realism Score {idx+1}'] = pd.Series(realism_scores)
+            combined_realism_scores[f'Conf mat score {idx+1}'] = pd.Series(conf_mat_scores)
 
         # Create a DataFrame with columns for each JSONL file's realism scores
         df = pd.DataFrame(combined_realism_scores)
@@ -49,9 +62,13 @@ def realism_handling(data):
             df[f'Z-Score {idx+1}'] = zscore(df[f'Realism Score {idx+1}'], nan_policy='omit')
 
         # Calculate the averaged Z-score across all JSONL files
+        print(df)
         z_score_columns = [f'Z-Score {idx+1}' for idx in range(len(data))]
         df['Averaged Z-Score'] = df[z_score_columns].mean(axis=1)
-
+        
+        conf_mat_columns = [f'Conf mat score {idx+1}' for idx in range(len(data))]
+        df['AggConfMatScore'] = df[conf_mat_columns].apply(lambda row: row.dropna().tolist(), axis=1)
+ 
         # Calculate the averaged Z-score across all JSONL files
         realism_score_columns = [f'Realism Score {idx+1}' for idx in range(len(data))]
         df['Averaged Realism Score'] = df[realism_score_columns].mean(axis=1)
@@ -86,3 +103,4 @@ if __name__ == "__main__":
     df = realism_handling(data)
     print(df)
     print(df.columns)
+

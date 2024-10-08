@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+from collections import Counter
 import numpy as np
 import json
 import seaborn as sns
@@ -39,7 +40,8 @@ def convert_to_npy(input_paths, output_dir, shape):
     try:
         shutil.rmtree(output_dir)
     except FileNotFoundError as e:
-        print('FileNotFoundError', e)
+        print('FileNotFoundError', e
+              )
         pass
     os.makedirs(output_dir, exist_ok=True)
     
@@ -173,7 +175,7 @@ def load_ijepa_not_contrastive(config):
 
 
 # Link azure to local path and group answers
-def link_azure_local(jsonl_paths):
+def link_azure_local(config):
     """
     Process one or more JSONL files and link Azure paths to local paths based on predefined categories.
 
@@ -185,7 +187,7 @@ def link_azure_local(jsonl_paths):
     """
 
     # Function to read JSONL file
-
+    jsonl_paths = config["jsonl_path"]
     # Define path mappings
     dict_map = {
         'synth_diff_calc': './data/synthetic/diffusion',
@@ -257,7 +259,9 @@ def get_sets_content(timestamp):
         break #We jsut need to iterate once as all networks have the same data split
     
     return net_sets_dict
-def get_realism_set_dict(grouped_data, net_sets_dict, mean_realism_z_scored, do_z_score):
+
+
+def get_realism_set_dict(grouped_data, net_sets_dict, mean_realism_z_scored, do_z_score, model_to_seek):
     """
     Generates a dictionary of realism scores (or Z-scores) for each set in net_sets_dict.
 
@@ -274,6 +278,7 @@ def get_realism_set_dict(grouped_data, net_sets_dict, mean_realism_z_scored, do_
 
     # Initialize a dictionary to store realism scores or Z-scores for each set
     dict_sets_realism = {i + 1: [] for i in range(len(net_sets_dict.keys()))}
+    dict_sets_her = {i + 1: [] for i in range(len(net_sets_dict.keys()))}
 
     # If grouped_data is a list, take the first element for local path mapping
     if isinstance(grouped_data, list):
@@ -281,42 +286,59 @@ def get_realism_set_dict(grouped_data, net_sets_dict, mean_realism_z_scored, do_
   
 		# Determine which score to use based on do_z_score
         score_column = 'Averaged Z-Score' if do_z_score else 'Averaged Realism Score'
-    
+        scnd_score_column = 'AggConfMatScore'
     else:
         first_group = grouped_data
 
 		# Determine which score to use based on do_z_score
         score_column = 'Z-Score' if do_z_score else 'Realism Score'
-    
+
+
     # Iterate through the first_group to match local paths with net_sets_dict and populate dict_sets_realism
     for i in first_group:
-        local_path = first_group[i]['local_path']
-        
+        local_path = first_group[i]['local_path'][2:]
         # Ensure local_path is in the mean_realism_z_scored DataFrame
-        if os.path.basename(local_path) in mean_realism_z_scored.index:
+        if os.path.basename(local_path) in mean_realism_z_scored.index and model_to_seek in local_path:
+
             selected_score = mean_realism_z_scored.loc[os.path.basename(local_path), score_column]
+            second_selected_score = mean_realism_z_scored.loc[os.path.basename(local_path), scnd_score_column]
 
             for j in net_sets_dict:
+                
                 if local_path in net_sets_dict[j]:
+                    
                     dict_sets_realism[j].append(selected_score)
+                    dict_sets_her[j].append(second_selected_score)
+                    
                     break
+    
+    dict_sets_her = compute_agg_human_error(dict_sets_her)
+    
+    return dict_sets_realism, dict_sets_her
 
-    return dict_sets_realism
+def compute_agg_human_error(dict_sets_her):
 
-#def get_realism_set_dict(grouped_data, net_sets_dict):
-#
-#    dict_sets_realism = {i+1: [] for i in range(len(net_sets_dict.keys()))}
-#
-#    for i in grouped_data:
-#        local_path = grouped_data[i]['local_path']
-#        for j in net_sets_dict:
-#            if local_path in net_sets_dict[j]:
-#                dict_sets_realism[j].append(grouped_data[i]['realism_score'])
-#                break
-#    return dict_sets_realism
-def realism_corr_net(dict_sets_realism, metrics, timestamp):
+    for sete, values in dict_sets_her.items():
+
+        FN, FP, TN, TP = 0, 0, 0, 0
+        her = []
+        for idx in range(len(values[0])):
+            list_conf_mat = [values[i][idx] for i in range(len(values))]
+            dict_conf_mat = Counter(list_conf_mat)
+            her.append(dict_conf_mat['FN']/(dict_conf_mat['FN'] + dict_conf_mat['TP']))
+
+        her = np.mean(her)
+
+        dict_sets_her[sete] = her
+
+    return dict_sets_her
+
+
+
+def realism_corr_net(dict_sets_realism, metrics, timestamp, name):
     # Compute mean realism scores (already Z-score normalized)
-    realism_doc_1 = [np.mean(dict_sets_realism[i]) for i in dict_sets_realism]
+        
+    realism_doc_1 = [np.mean(dict_sets_realism[i]) if isinstance(dict_sets_realism[i], list) else dict_sets_realism[i] for i in dict_sets_realism]
 
     timestamp_dir = os.path.join('data/features', timestamp)
     dfs = []
@@ -375,11 +397,11 @@ def realism_corr_net(dict_sets_realism, metrics, timestamp):
     correlation_results_srcc = correlation_results_srcc.astype(float).fillna(0)
     correlation_results_krcc = correlation_results_krcc.astype(float).fillna(0)
 	
-    plot_correlation_results(correlation_results_srcc, correlation_results_krcc, timestamp_dir)
+    plot_correlation_results(correlation_results_srcc, correlation_results_krcc, timestamp_dir, name)
 
     return correlation_results_srcc, correlation_results_krcc 
 
-def plot_correlation_results(correlation_results_srcc, correlation_results_krcc, timestamp_dir):
+def plot_correlation_results(correlation_results_srcc, correlation_results_krcc, timestamp_dir, name):
     """
     Plots the correlation results for SRCC and KRCC in multiple heatmaps.
 
@@ -476,15 +498,17 @@ def plot_correlation_results(correlation_results_srcc, correlation_results_krcc,
 
     agg_corr_by_base_network_metric_krcc = agg_corr_by_base_network_metric_krcc.apply(pd.to_numeric, errors='coerce')
     best_network_krcc = agg_corr_by_base_network_metric_krcc.mean(axis=1).to_frame(name='Correlation')
+    
     sns.heatmap(best_network_krcc, annot=True, cmap='coolwarm', fmt='.2f', linewidths=0.5, ax=axs[1, 3])
+
     axs[1, 3].set_title('KRCC: Aggregated Correlation of Base Networks and Metrics')
     axs[1, 3].set_yticklabels(axs[1, 3].get_yticklabels(), rotation=0)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(timestamp_dir, 'corr_turing_quant_srcc_krcc.png'))
+    plt.savefig(os.path.join(timestamp_dir, f'{name}_corr_turing_quant_srcc_krcc.png'))
 
-    correlation_results_srcc.to_csv(os.path.join(timestamp_dir, 'corr_turing_quant_srcc.csv'))
-    correlation_results_krcc.to_csv(os.path.join(timestamp_dir, 'corr_turing_quant_krcc.csv'))
+    correlation_results_srcc.to_csv(os.path.join(timestamp_dir, f'{name}_corr_turing_quant_srcc.csv'))
+    correlation_results_krcc.to_csv(os.path.join(timestamp_dir, f'{name}_corr_turing_quant_krcc.csv'))
 
 
 

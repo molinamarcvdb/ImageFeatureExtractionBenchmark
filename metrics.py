@@ -6,7 +6,6 @@ from prdc import compute_prdc
 import torch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import torch
@@ -204,6 +203,7 @@ class KernelInceptionDistance(Metric):
     feature_network: str = "inception"
 
     def __init__(
+        self,
         feature: Union[str, int, Module] = 2048,
         subsets: int = 100,
         subset_size: int = 1000,
@@ -214,7 +214,7 @@ class KernelInceptionDistance(Metric):
         normalize: bool = False,
         **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
+        super(KernelInceptionDistance, self).__init__(**kwargs)
 
         rank_zero_warn(
             "Metric `Kernel Inception Distance` will save all extracted features in buffer."
