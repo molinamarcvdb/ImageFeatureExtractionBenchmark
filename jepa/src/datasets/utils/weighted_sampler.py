@@ -10,16 +10,10 @@ from operator import itemgetter
 import numpy as np
 
 import torch
-from torch.utils.data import (
-    Dataset,
-    Sampler,
-    DistributedSampler,
-    WeightedRandomSampler
-)
+from torch.utils.data import Dataset, Sampler, DistributedSampler, WeightedRandomSampler
 
 
 class DatasetFromSampler(Dataset):
-
     def __init__(self, sampler: Sampler):
         self.sampler = sampler
         self.sampler_list = None
@@ -34,7 +28,7 @@ class DatasetFromSampler(Dataset):
 
 
 class DistributedSamplerWrapper(DistributedSampler):
-    """ Convert any Pytorch Sampler to a DistributedSampler """
+    """Convert any Pytorch Sampler to a DistributedSampler"""
 
     def __init__(
         self,
@@ -59,7 +53,7 @@ class DistributedSamplerWrapper(DistributedSampler):
 
 
 class CustomWeightedRandomSampler(WeightedRandomSampler):
-    """ Generalized WeightedRandomSampler to allow for more than 2^24 samples """
+    """Generalized WeightedRandomSampler to allow for more than 2^24 samples"""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -69,14 +63,13 @@ class CustomWeightedRandomSampler(WeightedRandomSampler):
             range(0, len(self.weights)),
             size=self.num_samples,
             p=self.weights.numpy() / torch.sum(self.weights).numpy(),
-            replace=self.replacement
+            replace=self.replacement,
         )
         rand_tensor = torch.from_numpy(rand_tensor)
         return iter(rand_tensor.tolist())
 
 
 class DistributedWeightedSampler(DistributedSamplerWrapper):
-
     def __init__(
         self,
         weights,
@@ -85,9 +78,8 @@ class DistributedWeightedSampler(DistributedSamplerWrapper):
         shuffle: bool = True,
     ):
         weighted_sampler = CustomWeightedRandomSampler(
-            weights=weights,
-            num_samples=len(weights),
-            replacement=False)
+            weights=weights, num_samples=len(weights), replacement=False
+        )
 
         super(DistributedWeightedSampler, self).__init__(
             sampler=weighted_sampler,

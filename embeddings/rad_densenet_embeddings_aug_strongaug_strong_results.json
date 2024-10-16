@@ -1,5 +1,0 @@
-{"wasserstein_1d_train_val_train_synth": 4.787399690852102, 
-"wasserstein_1d_train_val_train_train_adv": 7.610976331753015, 
-"wasserstein_1d_train_val_train_val_adv": 4.577678371890413, 
-"detection_ratio_train": 0.4966357519549009, 
-"detection_ratio_val": 0.16417910447761194}

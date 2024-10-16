@@ -9,7 +9,6 @@ import torch.nn as nn
 
 
 class MultiMaskWrapper(nn.Module):
-
     def __init__(self, backbone):
         super().__init__()
         self.backbone = backbone
@@ -27,7 +26,6 @@ class MultiMaskWrapper(nn.Module):
 
 
 class PredictorMultiMaskWrapper(nn.Module):
-
     def __init__(self, backbone):
         super().__init__()
         self.backbone = backbone

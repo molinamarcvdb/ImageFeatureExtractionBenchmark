@@ -1,32 +1,32 @@
 # Configuration file for feature extraction and metric computation
-feature_extraction: false  
-eval_only: false 
-sing_image_eval: false 
-realism_correlation: true 
+feature_extraction: false
+eval_only: true
+sing_image_eval: false
+realism_correlation: false
 privacy_benchmark: false
-adversarial_privacy_assesment: false 
+adversarial_privacy_assesment: false
 degraded_datasets: false
 # Paths to the real and synthetic datasets
-real_dataset_path: 'data/real_chestxpert/'
-synthetic_dataset_path: 'data/diffusion_chestxpert'
+real_dataset_path: 'data/real/'
+synthetic_dataset_path: 'data/synthetic/'
 dataset_info: 'data/chestxpert_small.csv'
 
 output_preprocessing: './data/preprocessing/'
 unique_individual_id: 'id'
-secondary_ids:    
+secondary_ids:
 
 unique_image_id: 'Filename'
 image_extension: '.jpg'
 seed: 42
-model_to_seek: 'diff'
+model_to_seek: 'gan'
 # List of networks to use for feature extraction
 networks:
-  #- 'rad_inception'
-  #- 'inception'
-  #- 'resnet50'
-  #- 'rad_resnet50'
-  #- 'inceptionresnet'
-  #- 'rad_inceptionresnet'
+  - 'rad_inception'
+  - 'inception'
+  - 'resnet50'
+  - 'rad_resnet50'
+  - 'inceptionresnet'
+  - 'rad_inceptionresnet'
   - 'densenet121'
   - 'rad_densenet'
   - 'clip'
@@ -36,17 +36,22 @@ networks:
   #- 'ijepa'
 metrics:
   - fid
-  - precision 
+  - precision
   - recall
   - density
   - coverage
   - kid
   - is
-  #- mmd
+  - mmd
+  - fid_inf
+  - realism
+  - vendi
+  - authpct
+  - sw
 
 # Batch size for feature extraction
-batch_size: 64 
-inference_bs: 768 
+batch_size: 32
+inference_bs: 768
 #Number of sets to divide each dataset into
 num_sets: 10
 
@@ -59,22 +64,22 @@ features_output_dir: 'data/features'
 # Path to jsonl where turign test responses are contained
 jsonl_path:
 - '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/Turing/evaluations_ed33ee11-c112-4a5c-8dd6-626b978e7e8d_Nadine_Benz.jsonl'
-- '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/Turing/evaluations_ed33ee11-c112-4a5c-8dd6-626b978e7e8d_Nadine_Benz.jsonl'
+#- '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/Turing/evaluations_ed33ee11-c112-4a5c-8dd6-626b978e7e8d_Nadine_Benz.jsonl'
 #- '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/data/turing_tests/evaluations_4e26daae-530d-430b-81be-107704de6a9e_MARC_M.jsonl'
 timestamp: '20240930_150033' #'20240821_151647' # for specific features previously computed, use with feature_extraction=false
 do_z_score: true
 preprocess_to_npy: True
 # New parameters for privacy benchmark
 ijepa_model_dir:  './ijepa/logs/in2kk_vith14.224-bs.2048-ep.66'
-n_features: 128 
+n_features: 128
 target_resolution: [224, 224]
 split_ratio: 0.8
-num_workers: 4 
-pin_memory: true 
+num_workers: 4
+pin_memory: true
 base_lr: 0.01
 min_lr: 0.00005
-gamma: 0.99 
-n_epochs: 100 
+gamma: 0.99
+n_epochs: 100
 temperature: 0.5
 save_model_interval: 10
 multi_gpu: true
@@ -83,9 +88,9 @@ margin: 0.05
 swap: false,
 smooth_loss: true,
 triplets_per_anchor: 'all'
-unfreeze_epoch: 5 
+unfreeze_epoch: 5
 downscaling_after_freezing: 200
-attentive_probing: False 
+attentive_probing: False
 augmentation_strength: 'weak' # or 'strong'
 contrastive: true
 ema_momentum: 0.99

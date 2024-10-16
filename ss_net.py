@@ -26,6 +26,7 @@ import torch.nn as nn
 from torchvision import models
 from utils import load_model_from_hub
 
+
 class SiameseNetwork(nn.Module):
     """
     A Siamese Network architecture based on a ResNet-50 backbone for feature extraction.
@@ -62,7 +63,9 @@ class SiameseNetwork(nn.Module):
 
         if self.network == "ResNet-50":
             self.model = models.resnet50(pretrained=False)
-            self.model.load_state_dict(load_model_from_hub('molinamarc/syntheva', 'resnet50-19c8e357.pth'))
+            self.model.load_state_dict(
+                load_model_from_hub("molinamarc/syntheva", "resnet50-19c8e357.pth")
+            )
 
             # Adjust the input layer for different channels
             if self.in_channels == 1:
@@ -564,10 +567,12 @@ def run_training(
     # Load pretrained model if specified
     current_epoch = 0
     if pretrained is not None:
-        pretrained_model_dict = load_model_from_hub('molinamarc/syntheva','SSCN/best_model.pth')
+        pretrained_model_dict = load_model_from_hub(
+            "molinamarc/syntheva", "SSCN/best_model.pth"
+        )
         model.load_state_dict(pretrained_model_dict["model_state_dict"])
         print(pretrained_model_dict.keys())
-        current_epoch = pretrained_model_dict['epoch']
+        current_epoch = pretrained_model_dict["epoch"]
         print(f"Loaded pretrained model from {pretrained}.")
 
     # Loss function setup
@@ -1191,12 +1196,14 @@ def distances_train_val_synth(
         f"Pairwise distances computed - Validation: {pairwise_dist_val.shape}, Synthetic: {pairwise_dist_syn.shape}"
     )
 
-    closest_validation_indices, closest_validation_distances = (
-        find_closest_samples_and_distances(pairwise_dist_val)
-    )
-    closest_synthetic_indices, closest_synthetic_distances = (
-        find_closest_samples_and_distances(pairwise_dist_syn)
-    )
+    (
+        closest_validation_indices,
+        closest_validation_distances,
+    ) = find_closest_samples_and_distances(pairwise_dist_val)
+    (
+        closest_synthetic_indices,
+        closest_synthetic_distances,
+    ) = find_closest_samples_and_distances(pairwise_dist_syn)
     print(
         f"Closest indices - Validation: {closest_validation_indices[:10]}, Synthetic: {closest_synthetic_indices[:10]}"
     )

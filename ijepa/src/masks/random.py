@@ -16,7 +16,6 @@ logger = getLogger()
 
 
 class MaskCollator(object):
-
     def __init__(
         self,
         ratio=(0.4, 0.6),
@@ -25,11 +24,14 @@ class MaskCollator(object):
     ):
         super(MaskCollator, self).__init__()
         if not isinstance(input_size, tuple):
-            input_size = (input_size, ) * 2
+            input_size = (input_size,) * 2
         self.patch_size = patch_size
-        self.height, self.width = input_size[0] // patch_size, input_size[1] // patch_size
+        self.height, self.width = (
+            input_size[0] // patch_size,
+            input_size[1] // patch_size,
+        )
         self.ratio = ratio
-        self._itr_counter = Value('i', -1)  # collator is shared across worker processes
+        self._itr_counter = Value("i", -1)  # collator is shared across worker processes
 
     def step(self):
         i = self._itr_counter
@@ -39,14 +41,14 @@ class MaskCollator(object):
         return v
 
     def __call__(self, batch):
-        '''
+        """
         Create encoder and predictor masks when collating imgs into a batch
         # 1. sample enc block (size + location) using seed
         # 2. sample pred block (size) using seed
         # 3. sample several enc block locations for each image (w/o seed)
         # 4. sample several pred block locations for each image (w/o seed)
         # 5. return enc mask and pred mask
-        '''
+        """
         B = len(batch)
 
         collated_batch = torch.utils.data.default_collate(batch)
@@ -57,7 +59,7 @@ class MaskCollator(object):
         ratio = self.ratio
         ratio = ratio[0] + torch.rand(1, generator=g).item() * (ratio[1] - ratio[0])
         num_patches = self.height * self.width
-        num_keep = int(num_patches * (1. - ratio))
+        num_keep = int(num_patches * (1.0 - ratio))
 
         collated_masks_pred, collated_masks_enc = [], []
         for _ in range(B):

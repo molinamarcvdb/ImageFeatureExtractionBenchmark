@@ -41,7 +41,7 @@ networks:
 
 metrics:
   - fid
-  - precision 
+  - precision
   - recall
   - density
   - coverage
@@ -120,4 +120,3 @@ To run the script with feature extraction enabled and realism correlation analys
     ```
 
 The script will process the datasets, extract features, compute metrics, and perform realism correlation analysis.
-

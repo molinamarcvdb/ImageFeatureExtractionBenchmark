@@ -1,12 +1,15 @@
 import numpy as np
+from tqdm import tqdm
 from scipy import linalg
 import warnings
 from typing import Tuple
-from prdc import compute_prdc
+
+# from prdc import compute_prdc
 import torch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from typing import Any, List, Optional, Sequence, Tuple, Union
+from sklearn.linear_model import LinearRegression
 
 import torch
 from torch import Tensor
@@ -16,13 +19,25 @@ from torchmetrics.image.fid import NoTrainInceptionV3
 from torchmetrics.metric import Metric
 from torchmetrics.utilities import rank_zero_warn
 from torchmetrics.utilities.data import dim_zero_cat
-from torchmetrics.utilities.imports import _MATPLOTLIB_AVAILABLE, _TORCH_FIDELITY_AVAILABLE
+from torchmetrics.utilities.imports import (
+    _MATPLOTLIB_AVAILABLE,
+    _TORCH_FIDELITY_AVAILABLE,
+)
 from torchmetrics.utilities.plot import _AX_TYPE, _PLOT_OUT_TYPE
+
+from metrics_sp.fls import compute_fls_overfit, compute_fls
+from metrics_sp.vendi import compute_vendi_score
+from metrics_sp.authpct import compute_authpct
+from metrics_sp.sw import sw_approx
+from metrics_sp.prdc import compute_prdc
 
 if not _MATPLOTLIB_AVAILABLE:
     __doctest_skip__ = ["KernelInceptionDistance.plot"]
 
-__doctest_requires__ = {("KernelInceptionDistance", "KernelInceptionDistance.plot"): ["torch_fidelity"]}
+__doctest_requires__ = {
+    ("KernelInceptionDistance", "KernelInceptionDistance.plot"): ["torch_fidelity"]
+}
+
 
 class FIDStatistics:
     def __init__(self, mu: np.ndarray, sigma: np.ndarray):
@@ -39,14 +54,21 @@ class FIDStatistics:
         sigma1 = np.atleast_2d(sigma1)
         sigma2 = np.atleast_2d(sigma2)
 
-        assert mu1.shape == mu2.shape, f"Training and test mean vectors have different lengths: {mu1.shape}, {mu2.shape}"
-        assert sigma1.shape == sigma2.shape, f"Training and test covariances have different dimensions: {sigma1.shape}, {sigma2.shape}"
+        assert (
+            mu1.shape == mu2.shape
+        ), f"Training and test mean vectors have different lengths: {mu1.shape}, {mu2.shape}"
+        assert (
+            sigma1.shape == sigma2.shape
+        ), f"Training and test covariances have different dimensions: {sigma1.shape}, {sigma2.shape}"
 
         diff = mu1 - mu2
 
         covmean, _ = linalg.sqrtm(sigma1.dot(sigma2), disp=False)
         if not np.isfinite(covmean).all():
-            msg = "FID calculation produces singular product; adding %s to diagonal of cov estimates" % eps
+            msg = (
+                "FID calculation produces singular product; adding %s to diagonal of cov estimates"
+                % eps
+            )
             warnings.warn(msg)
             offset = np.eye(sigma1.shape[0]) * eps
             covmean = linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
@@ -54,9 +76,10 @@ class FIDStatistics:
         if np.iscomplexobj(covmean):
             covmean = covmean.real
 
-        fid = (diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean))
+        fid = (
+            diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean)
+        )
         return fid
-
 
 
 def maximum_mean_discrepancy(k_xx: Tensor, k_xy: Tensor, k_yy: Tensor) -> Tensor:
@@ -79,7 +102,13 @@ def maximum_mean_discrepancy(k_xx: Tensor, k_xy: Tensor, k_yy: Tensor) -> Tensor
     return value
 
 
-def poly_kernel(f1: Tensor, f2: Tensor, degree: int = 3, gamma: Optional[float] = None, coef: float = 1.0) -> Tensor:
+def poly_kernel(
+    f1: Tensor,
+    f2: Tensor,
+    degree: int = 3,
+    gamma: Optional[float] = None,
+    coef: float = 1.0,
+) -> Tensor:
     """Adapted from `KID Score`_."""
     if gamma is None:
         gamma = 1.0 / f1.shape[1]
@@ -87,7 +116,11 @@ def poly_kernel(f1: Tensor, f2: Tensor, degree: int = 3, gamma: Optional[float] 
 
 
 def poly_mmd(
-    f_real: Tensor, f_fake: Tensor, degree: int = 3, gamma: Optional[float] = None, coef: float = 1.0
+    f_real: Tensor,
+    f_fake: Tensor,
+    degree: int = 3,
+    gamma: Optional[float] = None,
+    coef: float = 1.0,
 ) -> Tensor:
     """Adapted from `KID Score`_."""
     k_11 = poly_kernel(f_real, f_real, degree, gamma, coef)
@@ -236,7 +269,9 @@ class KernelInceptionDistance(Metric):
                     f"Integer input to argument `feature` must be one of {valid_int_input}, but got {feature}."
                 )
 
-            self.inception: Module = NoTrainInceptionV3(name="inception-v3-compat", features_list=[str(feature)])
+            self.inception: Module = NoTrainInceptionV3(
+                name="inception-v3-compat", features_list=[str(feature)]
+            )
         elif isinstance(feature, Module):
             self.inception = feature
             self.used_custom_model = True
@@ -248,7 +283,9 @@ class KernelInceptionDistance(Metric):
         self.subsets = subsets
 
         if not (isinstance(subset_size, int) and subset_size > 0):
-            raise ValueError("Argument `subset_size` expected to be integer larger than 0")
+            raise ValueError(
+                "Argument `subset_size` expected to be integer larger than 0"
+            )
         self.subset_size = subset_size
 
         if not (isinstance(degree, int) and degree > 0):
@@ -256,7 +293,9 @@ class KernelInceptionDistance(Metric):
         self.degree = degree
 
         if gamma is not None and not (isinstance(gamma, float) and gamma > 0):
-            raise ValueError("Argument `gamma` expected to be `None` or float larger than 0")
+            raise ValueError(
+                "Argument `gamma` expected to be `None` or float larger than 0"
+            )
         self.gamma = gamma
 
         if not (isinstance(coef, float) and coef > 0):
@@ -287,7 +326,11 @@ class KernelInceptionDistance(Metric):
         if feature:
             features = imgs
         else:
-            imgs = (imgs * 255).byte() if self.normalize and (not self.used_custom_model) else imgs
+            imgs = (
+                (imgs * 255).byte()
+                if self.normalize and (not self.used_custom_model)
+                else imgs
+            )
             features = self.inception(imgs)
 
         if real:
@@ -310,10 +353,14 @@ class KernelInceptionDistance(Metric):
 
         n_samples_real = real_features.shape[0]
         if n_samples_real < self.subset_size:
-            raise ValueError("Argument `subset_size` should be smaller than the number of samples")
+            raise ValueError(
+                "Argument `subset_size` should be smaller than the number of samples"
+            )
         n_samples_fake = fake_features.shape[0]
         if n_samples_fake < self.subset_size:
-            raise ValueError("Argument `subset_size` should be smaller than the number of samples")
+            raise ValueError(
+                "Argument `subset_size` should be smaller than the number of samples"
+            )
 
         kid_scores_ = []
         for _ in range(self.subsets):
@@ -355,61 +402,105 @@ def MMD(x, y, kernel):
         y = torch.tensor(y, dtype=torch.float32).to(device)
 
     xx, yy, zz = torch.mm(x, x.t()), torch.mm(y, y.t()), torch.mm(x, y.t())
-    rx = (xx.diag().unsqueeze(0).expand_as(xx))
-    ry = (yy.diag().unsqueeze(0).expand_as(yy))
-    
-    dxx = rx.t() + rx - 2. * xx  # Used for A in (1)
-    dyy = ry.t() + ry - 2. * yy  # Used for B in (1)
-    dxy = rx.t() + ry - 2. * zz  # Used for C in (1)
-    
-    XX, YY, XY = (torch.zeros(xx.shape).to(device),
-                  torch.zeros(xx.shape).to(device),
-                  torch.zeros(xx.shape).to(device))
-    
+    rx = xx.diag().unsqueeze(0).expand_as(xx)
+    ry = yy.diag().unsqueeze(0).expand_as(yy)
+
+    dxx = rx.t() + rx - 2.0 * xx  # Used for A in (1)
+    dyy = ry.t() + ry - 2.0 * yy  # Used for B in (1)
+    dxy = rx.t() + ry - 2.0 * zz  # Used for C in (1)
+
+    XX, YY, XY = (
+        torch.zeros(xx.shape).to(device),
+        torch.zeros(xx.shape).to(device),
+        torch.zeros(xx.shape).to(device),
+    )
+
     if kernel == "multiscale":
         bandwidth_range = [0.2, 0.5, 0.9, 1.3]
         for a in bandwidth_range:
-            XX += a**2 * (a**2 + dxx)**-1
-            YY += a**2 * (a**2 + dyy)**-1
-            XY += a**2 * (a**2 + dxy)**-1
-            
+            XX += a**2 * (a**2 + dxx) ** -1
+            YY += a**2 * (a**2 + dyy) ** -1
+            XY += a**2 * (a**2 + dxy) ** -1
+
     elif kernel == "rbf":
         bandwidth_range = [10, 15, 20, 50]
         for a in bandwidth_range:
             XX += torch.exp(-0.5 * dxx / a)
             YY += torch.exp(-0.5 * dyy / a)
             XY += torch.exp(-0.5 * dxy / a)
-    
-    return torch.mean(XX + YY - 2. * XY).item()  # Convert the result to a Python float
+
+    return torch.mean(XX + YY - 2.0 * XY).item()  # Convert the result to a Python float
+
 
 def KID(ref_features, sample_features, set_size):
     # Initialize KID metric
     kid_metric = KernelInceptionDistance(subset_size=set_size)
-    
+
     # Convert features to torch tensors if they are numpy arrays
     if isinstance(ref_features, np.ndarray):
-        ref_features = torch.tensor(ref_features).to(device)#.to(torch.uint8)
+        ref_features = torch.tensor(ref_features).to(device)  # .to(torch.uint8)
     if isinstance(sample_features, np.ndarray):
-        sample_features = torch.tensor(sample_features).to(device)#.to(torch.uint8)
-    
+        sample_features = torch.tensor(sample_features).to(device)  # .to(torch.uint8)
+
     # Update KID metric with real and fake features
     kid_metric.update(ref_features, real=True, feature=True)
     kid_metric.update(sample_features, real=False, feature=True)
-    
+
     # Compute KID mean and std
     kid_mean, kid_std = kid_metric.compute()
 
     return kid_mean.cpu().numpy(), kid_std.cpu().numpy()
+
 
 def compute_statistics(features: np.ndarray) -> FIDStatistics:
     mu = np.mean(features, axis=0)
     sigma = np.cov(features, rowvar=False)
     return FIDStatistics(mu, sigma)
 
+
 def calculate_fid(features1: np.ndarray, features2: np.ndarray) -> float:
     stats1 = compute_statistics(features1)
     stats2 = compute_statistics(features2)
     return stats1.frechet_distance(stats2)
+
+
+def compute_FD_infinity(reps1, reps2, num_points=15):
+    """
+    reps1:
+        representation of training images
+    reps2:
+        representatio of generated images
+    num_points:
+        Number of FD_N we evaluate to fit a line.
+        Default: 15
+
+    """
+    fds = []
+
+    # Choose the number of images to evaluate FID_N at regular intervals over N
+    fd_batches = np.linspace(
+        min(5000, max(len(reps2) // 10, 2)), len(reps2), num_points
+    ).astype("int32")
+    stats1 = compute_statistics(reps1)
+
+    pbar = tqdm(total=num_points, desc="FID-infinity batches")
+    # Evaluate FD_N
+    rng = np.random.default_rng()
+    for fd_batch_size in fd_batches:
+        # sample, replacement allowed for different sample sizes
+        fd_activations = rng.choice(reps2, fd_batch_size, replace=False)
+        stats2 = compute_statistics(fd_activations)
+        fds.append(stats1.frechet_distance(stats2))
+        pbar.update(1)
+    del pbar
+    fds = np.array(fds).reshape(-1, 1)
+
+    # Fit linear regression
+    reg = LinearRegression().fit(1 / fd_batches.reshape(-1, 1), fds)
+    fd_infinity = reg.predict(np.array([[0]]))[0, 0]
+
+    return fd_infinity
+
 
 def compute_inception_score(activations: np.ndarray, split_size: int = 5000) -> float:
     """
@@ -430,7 +521,7 @@ def compute_inception_score(activations: np.ndarray, split_size: int = 5000) -> 
 
     softmax_out = []
     for i in range(0, len(activations), split_size):
-        part = activations[i: i + split_size]
+        part = activations[i : i + split_size]
         # Ensure the activations are in the [0,1] range and add epsilon to avoid log(0)
         part = np.clip(part, epsilon, 1 - epsilon)
 
@@ -438,34 +529,58 @@ def compute_inception_score(activations: np.ndarray, split_size: int = 5000) -> 
         mean_part = np.mean(part, axis=0)
         kl = part * (np.log(part + epsilon) - np.log(mean_part + epsilon))
         kl = np.mean(np.sum(kl, axis=1))
-        
+
         softmax_out.append(np.exp(kl))
-    
+
     is_score = np.mean(softmax_out)
-    
+
     return float(is_score)
 
-def calculate_metrics(ref_features: np.ndarray, sample_features: np.ndarray, set_size: int) -> dict:
+
+def calculate_metrics(
+    ref_features: np.ndarray, sample_features: np.ndarray, set_size: int
+) -> dict:
     metrics = {}
 
     # Compute FID
-    metrics['fid'] = calculate_fid(ref_features, sample_features)
+    metrics["fid"] = calculate_fid(ref_features, sample_features)
+    metrics["fid_inf"] = compute_FD_infinity(ref_features, sample_features)
 
-    # Compute PRDC metrics
-    prdc_results = compute_prdc(ref_features, sample_features, nearest_k=5)
+    ## Compute PRDC metrics
+    prdc_results = compute_prdc(
+        ref_features, sample_features, nearest_k=5, realism=True
+    )
     metrics.update(prdc_results)
 
-    # Choose the kernel for MMD
-    mmd_kernel = 'rbf'  # or 'multiscale'
-    metrics['mmd'] = MMD(ref_features, sample_features, kernel=mmd_kernel)
-    
-    # IS
-    metrics['is'] = compute_inception_score(sample_features, set_size)
+    ## Choose the kernel for MMD
+    mmd_kernel = "rbf"  # or 'multiscale'
+    metrics["mmd"] = MMD(ref_features, sample_features, kernel=mmd_kernel)
 
-    # KID
-    metrics['kid'], _ = KID(ref_features, sample_features, set_size)
+    ## IS
+    metrics["is"] = compute_inception_score(sample_features, set_size)
+
+    ## KID
+    metrics["kid"], _ = KID(ref_features, sample_features, set_size)
+
+    # fls
+    # l_ref = ref_features.shape[0]
+    # print(l_ref)
+    # train_feat, baseline_feat, test_feat, gen_feat = ref_features[:int(0.8*l_ref)], ref_features[int(0.8*l_ref):], ref_features[:int(0.1*l_ref)], sample_features
+    # metrics['fls'] = compute_fls(train_feat, baseline_feat, test_feat, gen_feat)
+
+    # vendi
+    metrics["vendi"] = compute_vendi_score(sample_features)
+
+    # authpct
+
+    metrics["authpct"] = compute_authpct(ref_features, sample_features)
+
+    # sw
+    metrics["sw"] = sw_approx(ref_features, sample_features)
     print(metrics)
+
     return metrics
+
 
 # Dummy function to simulate feature extraction
 def generate_dummy_features(num_samples, feature_dim):
@@ -481,11 +596,12 @@ def generate_dummy_features(num_samples, feature_dim):
     """
     return np.random.rand(num_samples, feature_dim)
 
+
 # Test the calculate_metrics function
 def test_calculate_metrics():
     # Simulate features for real and generated datasets
     num_samples = 1000  # Number of images
-    feature_dim = 2048   # Dimension of the feature vector (e.g., output of a CNN layer)
+    feature_dim = 2048  # Dimension of the feature vector (e.g., output of a CNN layer)
 
     real_features = generate_dummy_features(num_samples, feature_dim)
     generated_features = generate_dummy_features(num_samples, feature_dim)
@@ -497,6 +613,7 @@ def test_calculate_metrics():
     print("Calculated Metrics:")
     for key, value in metrics.items():
         print(f"{key}: {value}")
+
 
 # Run the test
 # test_calculate_metrics()
