@@ -22,6 +22,7 @@ from privacy_benchmark import (
     compute_distances_and_plot,
     find_and_plot_similar_images,
 )
+from saliency.heatmap_vis import saliency_representations
 from tqdm import tqdm
 import traceback
 import logging
@@ -347,6 +348,8 @@ def main():
             timestamp,
             "baseline",
         )
+    if config.get("saliency_representation", False):
+        saliency_representations(config)
 
     if config.get("privacy_benchmark", False):
         print("Running privacy benchmark...")

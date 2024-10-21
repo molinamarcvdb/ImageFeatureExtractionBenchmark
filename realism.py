@@ -102,17 +102,15 @@ def realism_handling(data):
     return df
 
 
+from matplotlib.colors import LinearSegmentedColormap
+
+
 def calculate_ema(data, span=15):
     return pd.Series(data).ewm(span=span, adjust=False).mean()
 
 
 def calculate_error_ci(data, span=15):
-
     return pd.Series(data).ewm(span=span, adjust=False).std()
-
-    return data.expanding().std()
-
-    return data.rolling(window=span).std()
 
 
 def visualize_turing_tests(df, output_dir):
@@ -171,17 +169,27 @@ def visualize_turing_tests(df, output_dir):
     diffusion_data = process_data(diffusion_df, True)
 
     # Create the plot with four subplots in a 2x2 grid
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 16))
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(24, 20))
 
-    def plot_data(ax, realism_scores, realism_emas, respondent_errors, stds, title):
-        colors = plt.cm.rainbow(np.linspace(0, 1, len(realism_scores)))
+    # Create a custom colormap for Turing test responses with stronger colors
+    colors = ["#0000FF", "#FF8000"]
+    n_bins = 4
+    cmap = LinearSegmentedColormap.from_list("custom", colors, N=n_bins)
+
+    def plot_data(
+        ax, realism_scores, realism_emas, respondent_errors, stds, title, is_synthetic
+    ):
+        num_respondents = len(realism_scores)
+        colors = cmap(np.linspace(0, 1, num_respondents))
 
         ax_realism = ax
         ax_realism.set_xlabel("Cases")
         ax_realism.set_ylabel("Realism Score")
 
         ax_error = ax.twinx()
-        ax_error.set_ylabel("Cumulative Human Error Rate")
+        ax_error.set_ylabel("Human Error Rate")
+
+        overall_errors = []
 
         for (
             (realism_col, realism),
@@ -197,119 +205,188 @@ def visualize_turing_tests(df, output_dir):
             colors,
         ):
             x = range(len(realism))
-            # ax_realism.plot(x, realism, alpha=0.3, color=color, label=f'{realism_col} Raw')
-            ax_realism.plot(x, ema, color=color, label=f"{realism_col} EMA")
+            ax_realism.plot(
+                x, ema, color=color, label=f"{realism_col} (Error: {overall_error:.2f})"
+            )
             ax_realism.fill_between(
-                x,
-                ema - std_roll,
-                ema + std_roll,
-                alpha=0.2,
-                color=color,
-                label=f"{realism_col} std",
+                x, ema - std_roll, ema + std_roll, alpha=0.2, color=color
             )
-            ax_error.plot(
-                x,
-                error,
-                linestyle="--",
-                color=color,
-                label=f"{error_col} (Overall: {float(overall_error):.2f})",
-            )
+            ax_error.plot(x, error, linestyle="--", color=color)
+            overall_errors.append(overall_error)
 
         ax_realism.set_ylim(0, 100)
         ax_error.set_ylim(0, 1)
 
         ax.set_title(title)
 
-        # Combine legends
-        lines1, labels1 = ax_realism.get_legend_handles_labels()
-        lines2, labels2 = ax_error.get_legend_handles_labels()
-        ax.legend(
-            lines1 + lines2, labels1 + labels2, loc="upper left", fontsize="x-small"
-        )
+        # Add mini-legend with overall error rates
+        overall_error_text = f"Mean Error: {np.mean(overall_errors):.2f}"
+        # ax.text(0.05, 0.95, overall_error_text, transform=ax.transAxes,
+        #        verticalalignment='top', fontsize=10,
+        #        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-    # Plot data for each subplot
-    plot_data(
+        # Add legend for individual lines
+        ax_realism.legend(loc="upper left", fontsize=13)
+
+        return (
+            ax_realism.get_lines()[0],
+            ax_error.get_lines()[0],
+        )  # Return one line from each axis for the main legend
+
+    # Plot data for each subplot and collect legend handles
+    handle1_realism, handle1_error = plot_data(
         ax1,
         synthetic_data[0],
         synthetic_data[1],
         synthetic_data[2],
         synthetic_data[3],
         "All Synthetic Images",
+        True,
     )
-    plot_data(
-        ax2, real_data[0], real_data[1], real_data[2], real_data[3], "Real Images"
+    handle2_realism, handle2_error = plot_data(
+        ax2,
+        real_data[0],
+        real_data[1],
+        real_data[2],
+        real_data[3],
+        "Real Images",
+        False,
     )
-    plot_data(
-        ax3, gan_data[0], gan_data[1], gan_data[2], gan_data[3], "GAN-generated Images"
+    handle3_realism, handle3_error = plot_data(
+        ax3,
+        gan_data[0],
+        gan_data[1],
+        gan_data[2],
+        gan_data[3],
+        "GAN-generated Images",
+        True,
     )
-    plot_data(
+    handle4_realism, handle4_error = plot_data(
         ax4,
         diffusion_data[0],
         diffusion_data[1],
         diffusion_data[2],
         diffusion_data[3],
         "Diffusion Model Images",
+        True,
     )
 
+    # Create a single legend outside the subplots for realism score and error rate
+    fig.legend(
+        [handle1_realism, handle1_error],
+        ["Realism Score (EMA)", "Human Error Rate"],
+        loc="center left",
+        bbox_to_anchor=(0.9, 1.005),
+        fontsize=14,
+    )
+
+    # Create color legend for Turing test responses
+    response_labels = [
+        "True Positive (TP)",
+        "False Negative (FN)",
+        "True Negative (TN)",
+        "False Positive (FP)",
+    ]
+    legend_elements = [
+        plt.Rectangle((0, 0), 1, 1, fc=color, ec="none") for color in colors
+    ]
+    # fig.legend(legend_elements, response_labels, loc='center left', bbox_to_anchor=(1, 0.3),
+    #               title="Turing Test Responses", fontsize='small')
+
     # Adjust layout and display the plot
+    fig.suptitle("Realism and Human Error Rate Progression", fontsize=18)
     plt.tight_layout()
+    plt.subplots_adjust(right=0.98)  # Make room for the legends
     plt.savefig(f"{output_dir}/turing_test_results.png", dpi=300, bbox_inches="tight")
     plt.close()
 
 
-# Example usage:
+# Examimport json
+from itertools import combinations
+from typing import List
+import numpy as np
+from sklearn.metrics import cohen_kappa_score
+import json
+import urllib.parse
+
+
+def calculate_inter_rater_agreement(
+    file_paths: List[str], debug: bool = False
+) -> float:
+    """
+    Calculate the average inter-rater agreement for 'is_real' classification
+    across multiple JSONL files containing Turing test results.
+
+    Args:
+    file_paths (List[str]): List of paths to JSONL files containing Turing test results.
+    debug (bool): If True, print debugging information.
+
+    Returns:
+    float: Average Cohen's Kappa score across all pairs of raters.
+    """
+
+    def get_image_id(url):
+        # Parse the URL and remove the query string (SAS token)
+        parsed_url = urllib.parse.urlparse(url)
+        return urllib.parse.urlunparse(parsed_url._replace(query=""))
+
+    # Load data from all files
+    all_ratings = {}
+    image_ids = set()
+
+    for file_path in file_paths:
+        if debug:
+            print(f"Processing file: {file_path}")
+
+        with open(file_path, "r") as f:
+            ratings = {}
+            for i, line in enumerate(f):
+                try:
+                    data = json.loads(line)
+                    image_id = get_image_id(data["image_path"])
+                    is_real = int(
+                        data["is_real"]
+                    )  # Convert boolean to int for easier calculation
+                    ratings[image_id] = is_real
+                    image_ids.add(image_id)
+                    if debug and i < 5:  # Print first 5 entries for debugging
+                        print(f"  Entry {i}: Image ID: {image_id}, Is Real: {is_real}")
+                except json.JSONDecodeError:
+                    print(f"Error decoding JSON on line {i+1} in file {file_path}")
+                except KeyError as e:
+                    print(f"Missing key {e} on line {i+1} in file {file_path}")
+
+        all_ratings[file_path] = ratings
+        if debug:
+            print(f"  Processed {len(ratings)} entries from {file_path}")
+
+    # Ensure all raters have rated all images
+    for rater, ratings in all_ratings.items():
+        missing_images = image_ids - set(ratings.keys())
+        if missing_images:
+            raise ValueError(
+                f"Rater {rater} is missing ratings for {len(missing_images)} images"
+            )
+
+    # Calculate Cohen's Kappa for each pair of raters
+    kappa_scores = []
+    for (rater1, ratings1), (rater2, ratings2) in combinations(all_ratings.items(), 2):
+        y1 = [ratings1[img] for img in image_ids]
+        y2 = [ratings2[img] for img in image_ids]
+        kappa = cohen_kappa_score(y1, y2)
+        kappa_scores.append(kappa)
+        if debug:
+            print(f"Kappa score between {rater1} and {rater2}: {kappa:.4f}")
+
+    # Calculate and return the average Kappa score
+    return np.mean(kappa_scores)
+
+
 if __name__ == "__main__":
-    data = [
-        {
-            0: {
-                "user_id": "4e26daae-530d-430b-81be-107704de6a9e",
-                "image_path": "https://example.com/image1.png",
-                "category": "real_calc",
-                "is_real": False,
-                "realism_score": 2.5,
-                "image_duration": 4.76,
-                "index": 39,
-                "timestamp": "2024-08-19T09:26:32.421254",
-                "local_path": "./data/real/image1.png",
-            },
-            31: {
-                "user_id": "4e26daae-530d-430b-81be-107704de6a9e",
-                "image_path": "https://example.com/image2.png",
-                "category": "synth_diff_calc",
-                "is_real": False,
-                "realism_score": 1.0,
-                "image_duration": 25.58,
-                "index": 1,
-                "timestamp": "2024-08-19T08:37:34.299025",
-                "local_path": "./data/synthetic/image2.png",
-            },
-        },
-        {
-            0: {
-                "user_id": "4e26daae-530d-430b-81be-107704de6a9e",
-                "image_path": "https://example.com/image1.png",
-                "category": "real_calc",
-                "is_real": False,
-                "realism_score": 3.0,
-                "image_duration": 4.76,
-                "index": 39,
-                "timestamp": "2024-08-19T09:26:32.421254",
-                "local_path": "./data/real/image1.png",
-            },
-            31: {
-                "user_id": "4e26daae-530d-430b-81be-107704de6a9e",
-                "image_path": "https://example.com/image2.png",
-                "category": "synth_diff_calc",
-                "is_real": False,
-                "realism_score": 0.5,
-                "image_duration": 25.58,
-                "index": 1,
-                "timestamp": "2024-08-19T08:37:34.299025",
-                "local_path": "./data/synthetic/image2.png",
-            },
-        },
+    file_paths = [
+        "/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/Turing/evaluations_ed33ee11-c112-4a5c-8dd6-626b978e7e8d_Nadine_Benz.jsonl",
+        "/home/ksamamov/GitLab/Notebooks/feat_ext_bench/data/turing_tests/evaluations_e15ce52f-ab76-45f2-9b94-8a7e140c3bbb_DANIELA_RAMIREZ.jsonl",
     ]
 
-    df = realism_handling(data)
-    print(df)
-    print(df.columns)
+    average_kappa = calculate_inter_rater_agreement(file_paths)
+    print(f"Average Inter-rater Agreement (Cohen's Kappa): {average_kappa:.4f}")

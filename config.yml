@@ -1,14 +1,15 @@
 # Configuration file for feature extraction and metric computation
 feature_extraction: false
-eval_only: true
+eval_only: false
 sing_image_eval: false
 realism_correlation: false
+saliency_representation: true
 privacy_benchmark: false
 adversarial_privacy_assesment: false
 degraded_datasets: false
 # Paths to the real and synthetic datasets
-real_dataset_path: 'data/real/'
-synthetic_dataset_path: 'data/synthetic/'
+real_dataset_path: '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/output_images_512_all'
+synthetic_dataset_path: '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/syntheva/logs/009-DiT-XL-2/DiT-XL-2-0010000-SIZE-512-CLASS1-VAE-EMA-CFG-1.5-SEED-0--STEPS-350-FINAL'
 dataset_info: 'data/chestxpert_small.csv'
 
 output_preprocessing: './data/preprocessing/'
@@ -18,15 +19,15 @@ secondary_ids:
 unique_image_id: 'Filename'
 image_extension: '.jpg'
 seed: 42
-model_to_seek: 'gan'
+model_to_seek: 'diff'
 # List of networks to use for feature extraction
 networks:
-  - 'rad_inception'
-  - 'inception'
-  - 'resnet50'
-  - 'rad_resnet50'
-  - 'inceptionresnet'
-  - 'rad_inceptionresnet'
+  #- 'rad_inception'
+  #- 'inception'
+  #- 'resnet50'
+  #- 'rad_resnet50'
+  #- 'inceptionresnet'
+  #- 'rad_inceptionresnet'
   - 'densenet121'
   - 'rad_densenet'
   - 'clip'
@@ -64,8 +65,7 @@ features_output_dir: 'data/features'
 # Path to jsonl where turign test responses are contained
 jsonl_path:
 - '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/Turing/evaluations_ed33ee11-c112-4a5c-8dd6-626b978e7e8d_Nadine_Benz.jsonl'
-#- '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/Turing/evaluations_ed33ee11-c112-4a5c-8dd6-626b978e7e8d_Nadine_Benz.jsonl'
-#- '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/data/turing_tests/evaluations_4e26daae-530d-430b-81be-107704de6a9e_MARC_M.jsonl'
+- '/home/ksamamov/GitLab/Notebooks/feat_ext_bench/data/turing_tests/evaluations_e15ce52f-ab76-45f2-9b94-8a7e140c3bbb_DANIELA_RAMIREZ.jsonl'
 timestamp: '20240930_150033' #'20240821_151647' # for specific features previously computed, use with feature_extraction=false
 do_z_score: true
 preprocess_to_npy: True

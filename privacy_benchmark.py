@@ -8,7 +8,14 @@ from tensorflow.keras.applications import (
     InceptionResNetV2,
     DenseNet121,
 )
-from transformers import CLIPProcessor, CLIPModel, AutoModel, AutoImageProcessor
+from transformers import (
+    CLIPProcessor,
+    CLIPModel,
+    CLIPVisionModel,
+    AutoProcessor,
+    AutoModel,
+    AutoImageProcessor,
+)
 from tensorflow.keras.applications.inception_v3 import (
     preprocess_input as inception_preprocess,
 )
@@ -418,13 +425,20 @@ def initialize_model(network_name):
         backbone = CLIPModel.from_pretrained(
             "openai/clip-vit-base-patch32", output_hidden_states=True
         )
-        processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        backbone = CLIPVisionModel.from_pretrained(
+            "openai/clip-vit-base-patch32", output_hidden_states=True
+        )
+
+        processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
         backbone_type = "huggingface"
     elif network_name.lower() == "rad_clip":
         backbone = CLIPModel.from_pretrained(
             "flaviagiammarino/pubmed-clip-vit-base-patch32", output_hidden_states=True
         )
-        processor = CLIPProcessor.from_pretrained(
+        backbone = CLIPVisionModel.from_pretrained(
+            "flaviagiammarino/pubmed-clip-vit-base-patch32", output_hidden_states=True
+        )
+        processor = AutoProcessor.from_pretrained(
             "flaviagiammarino/pubmed-clip-vit-base-patch32"
         )
         backbone_type = "huggingface"

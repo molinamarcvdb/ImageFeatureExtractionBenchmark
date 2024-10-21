@@ -1,6 +1,7 @@
 import numpy as np
 from tqdm import tqdm
 from scipy import linalg
+from typing import Dict
 import warnings
 from typing import Tuple
 
@@ -449,7 +450,7 @@ def KID(ref_features, sample_features, set_size):
     # Compute KID mean and std
     kid_mean, kid_std = kid_metric.compute()
 
-    return kid_mean.cpu().numpy(), kid_std.cpu().numpy()
+    return kid_mean, kid_std
 
 
 def compute_statistics(features: np.ndarray) -> FIDStatistics:
@@ -538,47 +539,56 @@ def compute_inception_score(activations: np.ndarray, split_size: int = 5000) -> 
 
 
 def calculate_metrics(
-    ref_features: np.ndarray, sample_features: np.ndarray, set_size: int
-) -> dict:
+    ref_features: np.ndarray,
+    sample_features: np.ndarray,
+    set_size: int,
+    device: str = "cuda",
+) -> Dict[str, float]:
     metrics = {}
 
-    # Compute FID
-    metrics["fid"] = calculate_fid(ref_features, sample_features)
-    metrics["fid_inf"] = compute_FD_infinity(ref_features, sample_features)
+    # Convert numpy arrays to PyTorch tensors
+    ref_features_torch = torch.from_numpy(ref_features).float().to(device)
+    sample_features_torch = torch.from_numpy(sample_features).float().to(device)
 
-    ## Compute PRDC metrics
-    prdc_results = compute_prdc(
-        ref_features, sample_features, nearest_k=5, realism=True
-    )
-    metrics.update(prdc_results)
+    with torch.no_grad():
+        # Compute FID
+        metrics["fid"] = calculate_fid(ref_features_torch, sample_features_torch).item()
+        metrics["fid_inf"] = compute_FD_infinity(
+            ref_features_torch, sample_features_torch
+        ).item()
 
-    ## Choose the kernel for MMD
-    mmd_kernel = "rbf"  # or 'multiscale'
-    metrics["mmd"] = MMD(ref_features, sample_features, kernel=mmd_kernel)
+        # Compute PRDC metrics
+        prdc_results = compute_prdc(
+            ref_features_torch, sample_features_torch, nearest_k=5, realism=True
+        )
+        metrics.update({k: v.item() for k, v in prdc_results.items()})
 
-    ## IS
-    metrics["is"] = compute_inception_score(sample_features, set_size)
+        # Choose the kernel for MMD
+        mmd_kernel = "rbf"  # or 'multiscale'
+        metrics["mmd"] = MMD(
+            ref_features_torch, sample_features_torch, kernel=mmd_kernel
+        ).item()
 
-    ## KID
-    metrics["kid"], _ = KID(ref_features, sample_features, set_size)
+        # IS
+        metrics["is"] = compute_inception_score(sample_features_torch, set_size).item()
 
-    # fls
-    # l_ref = ref_features.shape[0]
-    # print(l_ref)
-    # train_feat, baseline_feat, test_feat, gen_feat = ref_features[:int(0.8*l_ref)], ref_features[int(0.8*l_ref):], ref_features[:int(0.1*l_ref)], sample_features
-    # metrics['fls'] = compute_fls(train_feat, baseline_feat, test_feat, gen_feat)
+        # KID
+        kid_mean, kid_std = KID(ref_features_torch, sample_features_torch, set_size)
+        metrics["kid_mean"] = kid_mean.item()
+        metrics["kid_std"] = kid_std.item()
 
-    # vendi
-    metrics["vendi"] = compute_vendi_score(sample_features)
+        # Vendi
+        metrics["vendi"] = compute_vendi_score(sample_features_torch).item()
 
-    # authpct
+        # AuthPct
+        metrics["authpct"] = compute_authpct(
+            ref_features_torch, sample_features_torch
+        ).item()
 
-    metrics["authpct"] = compute_authpct(ref_features, sample_features)
+        # SW
+        metrics["sw"] = sw_approx(ref_features_torch, sample_features_torch).item()
 
-    # sw
-    metrics["sw"] = sw_approx(ref_features, sample_features)
     print(metrics)
-
     return metrics
 
 

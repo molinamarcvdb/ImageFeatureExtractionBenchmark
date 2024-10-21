@@ -1,23 +1,46 @@
-# https://github.com/marcojira/fls/blob/main/metrics/AuthPct.py
 import torch
 
 
-def compute_authpct(train_feat, gen_feat):
-    with torch.no_grad():
-        train_feat = torch.tensor(train_feat, dtype=torch.float32)
-        gen_feat = torch.tensor(gen_feat, dtype=torch.float32)
-        real_dists = torch.cdist(train_feat, train_feat)
+def compute_authpct(train_feat, gen_feat, device="cuda"):
+    # Ensure inputs are PyTorch tensors with gradients enabled
+    train_feat = torch.tensor(
+        train_feat, dtype=torch.float32, device=device, requires_grad=True
+    )
+    gen_feat = torch.tensor(
+        gen_feat, dtype=torch.float32, device=device, requires_grad=True
+    )
 
-        # Hacky way to get it to ignore distance to self in nearest neighbor calculation
-        real_dists.fill_diagonal_(float("inf"))
-        gen_dists = torch.cdist(train_feat, gen_feat)
+    real_dists = torch.cdist(train_feat, train_feat)
 
-        real_min_dists = real_dists.min(axis=0)
-        gen_min_dists = gen_dists.min(dim=0)
+    # Use a large value instead of infinity to avoid potential numerical issues
+    real_dists.fill_diagonal_(1e10)
+    gen_dists = torch.cdist(train_feat, gen_feat)
 
-        # For every synthetic point, find its closest real point, d1
-        # Then, for that real point, find its closest real point(not itself), d2
-        # if d2<d1, then its authentic
-        authen = real_min_dists.values[gen_min_dists.indices] < gen_min_dists.values
-        authpct = (100 * torch.sum(authen) / len(authen)).item()
+    real_min_dists, real_min_indices = real_dists.min(axis=0)
+    gen_min_dists, gen_min_indices = gen_dists.min(dim=0)
+
+    # For every synthetic point, find its closest real point, d1
+    # Then, for that real point, find its closest real point(not itself), d2
+    # if d2<d1, then it's authentic
+    authen = real_min_dists[gen_min_indices] < gen_min_dists
+    authpct = 100 * torch.sum(authen.float()) / len(authen)
+
     return authpct
+
+
+# Example usage
+if __name__ == "__main__":
+    # Simulate some feature data
+    train_feat = torch.randn(1000, 128, requires_grad=True)
+    gen_feat = torch.randn(500, 128, requires_grad=True)
+
+    # Compute AuthPct
+    authpct = compute_authpct(train_feat, gen_feat)
+    print(f"AuthPct: {authpct.item():.2f}%")
+
+    # Backpropagation example
+    authpct.backward()
+
+    # Check if gradients were computed
+    print("Gradient for train_feat:", train_feat.grad is not None)
+    print("Gradient for gen_feat:", gen_feat.grad is not None)
