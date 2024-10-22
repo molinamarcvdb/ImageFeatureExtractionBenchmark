@@ -22,10 +22,14 @@ from saliency.metrics_grad import (
     MMDMetric,
     ISMetric,
     KIDMetric,
-    VendiMetric,
-    AuthPctMetric,
+    # VendiMetric,
+    # AuthPctMetric,
     SWMetric,
+    RealismMetric,
 )
+from metrics_sp.fid_inf import FIDInfinityMetric
+from metrics_sp.vendi import VendiMetric
+from metrics_sp.authpct import AuthPctMetric
 
 
 class GradCAM:
@@ -35,12 +39,14 @@ class GradCAM:
         "recall": RecallMetric,
         "density": DensityMetric,
         "coverage": CoverageMetric,
+        "realism": RealismMetric,
         "mmd": MMDMetric,
         "is": ISMetric,
         "kid": KIDMetric,
         "vendi": VendiMetric,
         "authpct": AuthPctMetric,
         "sw": SWMetric,
+        "fid_inf": FIDInfinityMetric,
     }
 
     def __init__(
@@ -57,6 +63,7 @@ class GradCAM:
         # Select and initialize the appropriate metric
         if metric_name not in self.METRIC_MAP:
             raise ValueError(f"Unsupported metric: {metric_name}")
+        print(f"Processing with {metric_name}")
 
         self.metric = self.METRIC_MAP[metric_name](device, **kwargs)
 
@@ -75,7 +82,6 @@ class GradCAM:
         start_time = time.time()
         self.acts_and_gradients.eval()
         features = get_features(self.acts_and_gradients, image)
-
         # Ensure features is 2D: (1, feature_dim)
         if features.dim() == 1:
             features = features.unsqueeze(0)
@@ -84,7 +90,6 @@ class GradCAM:
         new_gen_stats = self.metric.update_statistics(
             self.gen_stats, features, self.num_images
         )
-
         # Compute loss using the selected metric
         loss = self.metric.compute_loss(self.real_stats, new_gen_stats)
         loss.backward()

@@ -22,10 +22,10 @@ seed: 42
 model_to_seek: 'diff'
 # List of networks to use for feature extraction
 networks:
-  #- 'rad_inception'
-  #- 'inception'
-  #- 'resnet50'
-  #- 'rad_resnet50'
+  - 'rad_inception'
+  - 'inception'
+  - 'resnet50'
+  - 'rad_resnet50'
   #- 'inceptionresnet'
   #- 'rad_inceptionresnet'
   - 'densenet121'

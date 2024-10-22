@@ -76,7 +76,7 @@ def visualize_heatmaps(
     """Visualizes to which regions in the images FID is the most sensitive to."""
 
     visualizer = GradCAM(
-        model, reps_real, reps_gen, device, model_name, metric_name="precision"
+        model, reps_real, reps_gen, device, model_name, metric_name=metric_name
     )
 
     # ----------------------------------------------------------------------------
@@ -404,7 +404,6 @@ def saliency_representations(config: dict):
         print()
         print(f"Processing saliency fetures with GradCam for {network_name}")
         print()
-        out_dir = f"/home/ksamamov/GitLab/Notebooks/feat_ext_bench/data/features/20240930_150033/{network_name}/saliency"
         out_dir = os.path.join(timestamp_dir, network_name, "saliency")
         os.makedirs(out_dir, exist_ok=True)
         num_workers = 4

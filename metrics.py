@@ -27,7 +27,7 @@ from torchmetrics.utilities.imports import (
 from torchmetrics.utilities.plot import _AX_TYPE, _PLOT_OUT_TYPE
 
 from metrics_sp.fls import compute_fls_overfit, compute_fls
-from metrics_sp.vendi import compute_vendi_score
+from metrics_sp.vendi import VendiMetric
 from metrics_sp.authpct import compute_authpct
 from metrics_sp.sw import sw_approx
 from metrics_sp.prdc import compute_prdc
@@ -575,7 +575,7 @@ def calculate_metrics(
         # KID
         kid_mean, kid_std = KID(ref_features_torch, sample_features_torch, set_size)
         metrics["kid_mean"] = kid_mean.item()
-        metrics["kid_std"] = kid_std.item()
+        # metrics["kid_std"] = kid_std.item()
 
         # Vendi
         metrics["vendi"] = compute_vendi_score(sample_features_torch).item()

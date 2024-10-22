@@ -3,30 +3,31 @@ import torch
 from abc import ABC, abstractmethod
 from scipy import linalg
 from sklearn.metrics import pairwise_distances
-
+import torch
+import torch.nn as nn
+from enum import Enum
 from metrics_sp.fls import compute_fls_overfit, compute_fls
-from metrics_sp.vendi import compute_vendi_score
+
+# from metrics_sp.vendi import compute_vendi_score
 from metrics_sp.authpct import compute_authpct
 from metrics_sp.sw import sw_approx
-from metrics_sp.prdc import compute_prdc
+from metrics_sp.prdc import compute_prdc, PRDCLoss
 from metrics import KID
 
 
-class BaseMetric(ABC):
+class BaseMetric(nn.Module):
     def __init__(self, device):
+        super().__init__()
         self.device = device
 
-    @abstractmethod
     def compute_statistics(self, features):
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
+    def update_statistics(self, old_stats, new_stats, num_images):
+        raise NotImplementedError
+
     def compute_loss(self, real_stats, gen_stats):
-        pass
-
-    @abstractmethod
-    def update_statistics(self, old_stats, new_features, num_images):
-        pass
+        raise NotImplementedError
 
 
 class FIDMetric(BaseMetric):
@@ -69,49 +70,55 @@ class FIDMetric(BaseMetric):
         return (x_centered.T @ x_centered) / (x.size(0) - 1)
 
 
+class PRDCMetricType(Enum):
+    PRECISION = "precision"
+    RECALL = "recall"
+    DENSITY = "density"
+    COVERAGE = "coverage"
+    REALISM = "realism"
+
+
 class PRDCBaseMetric(BaseMetric):
-    def __init__(self, device, nearest_k=5):
+    def __init__(self, device, metric_type: PRDCMetricType, nearest_k=5):
         super().__init__(device)
         self.nearest_k = nearest_k
+        self.metric_type = metric_type
+        self.criterion = PRDCLoss(nearest_k=nearest_k, metric=metric_type.value)
 
     def compute_statistics(self, features):
-        return {"features": features}
+        return features
 
     def update_statistics(self, old_stats, new_features, num_images):
-        updated_features = torch.cat([old_stats["features"], new_features], dim=0)
-        return {"features": updated_features}
+        updated_features = torch.cat([old_stats, new_features], dim=0)
+        return updated_features
+
+    def compute_loss(self, real_stats, gen_stats):
+        return self.criterion(real_stats, gen_stats)
 
 
 class PrecisionMetric(PRDCBaseMetric):
-    def compute_loss(self, real_stats, gen_stats):
-        prdc_results = compute_prdc(
-            real_stats["features"], gen_stats["features"], nearest_k=self.nearest_k
-        )
-        return torch.tensor(prdc_results["precision"], device=self.device)
+    def __init__(self, device, nearest_k=5):
+        super().__init__(device, PRDCMetricType.PRECISION, nearest_k)
 
 
 class RecallMetric(PRDCBaseMetric):
-    def compute_loss(self, real_stats, gen_stats):
-        prdc_results = compute_prdc(
-            real_stats["features"], gen_stats["features"], nearest_k=self.nearest_k
-        )
-        return torch.tensor(prdc_results["recall"], device=self.device)
+    def __init__(self, device, nearest_k=5):
+        super().__init__(device, PRDCMetricType.RECALL, nearest_k)
 
 
 class DensityMetric(PRDCBaseMetric):
-    def compute_loss(self, real_stats, gen_stats):
-        prdc_results = compute_prdc(
-            real_stats["features"], gen_stats["features"], nearest_k=self.nearest_k
-        )
-        return torch.tensor(prdc_results["density"], device=self.device)
+    def __init__(self, device, nearest_k=5):
+        super().__init__(device, PRDCMetricType.DENSITY, nearest_k)
 
 
 class CoverageMetric(PRDCBaseMetric):
-    def compute_loss(self, real_stats, gen_stats):
-        prdc_results = compute_prdc(
-            real_stats["features"], gen_stats["features"], nearest_k=self.nearest_k
-        )
-        return torch.tensor(prdc_results["coverage"], device=self.device)
+    def __init__(self, device, nearest_k=5):
+        super().__init__(device, PRDCMetricType.COVERAGE, nearest_k)
+
+
+class RealismMetric(PRDCBaseMetric):
+    def __init__(self, device, nearest_k=5):
+        super().__init__(device, PRDCMetricType.REALISM, nearest_k)
 
 
 class MMDMetric(BaseMetric):
@@ -169,58 +176,57 @@ class ISMetric(BaseMetric):
 
 class KIDMetric(BaseMetric):
     def compute_statistics(self, features):
-        return {"features": features}
+        return features
 
     def compute_loss(self, real_stats, gen_stats):
-        real_features = real_stats["features"]
-        gen_features = gen_stats["features"]
-
-        kid, _ = KID(real_features, gen_features, real_features.shape[0])
+        real_features = real_stats
+        gen_features = gen_stats
+        kid, _ = KID(real_features, gen_features, gen_features.shape[0] // 10)
 
         return kid
 
     def update_statistics(self, old_stats, new_features, num_images):
-        updated_features = torch.cat([old_stats["features"], new_features], dim=0)
-        return {"features": updated_features}
+        updated_features = torch.cat([old_stats, new_features], dim=0)
+        return updated_features
 
 
 class VendiMetric(BaseMetric):
     def compute_statistics(self, features):
-        return {"features": features.cpu().numpy()}
+        return features
 
     def compute_loss(self, real_stats, gen_stats):
-        vendi_score = compute_vendi_score(gen_stats["features"])
-        return torch.tensor(vendi_score, device=self.device)
+        vendi_score = compute_vendi_score(gen_stats)
+        return vendi_score
 
     def update_statistics(self, old_stats, new_features, num_images):
-        updated_features = torch.cat([old_stats["features"], new_features], dim=0)
-        return {"features": updated_features}
+        updated_features = torch.cat([old_stats, new_features], dim=0)
+        return updated_features
 
 
 class AuthPctMetric(BaseMetric):
     def compute_statistics(self, features):
-        return {"features": features.cpu().numpy()}
+        return features
 
     def compute_loss(self, real_stats, gen_stats):
-        auth_pct = compute_authpct(real_stats["features"], gen_stats["features"])
+        auth_pct = compute_authpct(real_stats, gen_stats)
         return torch.tensor(auth_pct, device=self.device)
 
     def update_statistics(self, old_stats, new_features, num_images):
-        updated_features = torch.cat([old_stats["features"], new_features], dim=0)
-        return {"features": updated_features}
+        updated_features = torch.cat([old_stats, new_features], dim=0)
+        return updated_features
 
 
 class SWMetric(BaseMetric):
     def compute_statistics(self, features):
-        return {"features": features.cpu().numpy()}
+        return features
 
     def compute_loss(self, real_stats, gen_stats):
-        sw = sw_approx(real_stats["features"], gen_stats["features"])
-        return torch.tensor(sw, device=self.device)
+        sw = sw_approx(real_stats, gen_stats)
+        return sw
 
     def update_statistics(self, old_stats, new_features, num_images):
-        updated_features = torch.cat([old_stats["features"], new_features], dim=0)
-        return {"features": updated_features}
+        updated_features = torch.cat([old_stats, new_features], dim=0)
+        return updated_features
 
 
 # Usage examples:
