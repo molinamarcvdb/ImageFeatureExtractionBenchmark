@@ -26,3 +26,5 @@ ijepa/logs/*
 *.csv
 *.pyclear
 *.json
+*.pt
+*.npz

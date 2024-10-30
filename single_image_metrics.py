@@ -555,8 +555,14 @@ def compute_ground_truth_correlations(
     combined_df = single_metric_df.merge(
         mean_realism_z_scored, left_index=True, right_index=True, how="inner"
     )
+    combined_baseline_df = single_metric_baseline_df.merge(
+        mean_realism_z_scored, left_index=True, right_index=True, how="inner"
+    )
+    print(combined_baseline_df)
+
     # Initialize a list to store the correlation results
     correlation_results = []
+    correlation_baseline_results = []
 
     # Select column of realism raw or z-scored
     if do_z_score:
@@ -580,15 +586,37 @@ def compute_ground_truth_correlations(
                 "Kendall Correlation": kendall_corr,
             }
         )
+        try:
+            pearson_corr_base = combined_baseline_df[metric].corr(
+                combined_baseline_df[realism_column], method="pearson"
+            )
+            kendall_corr_base = combined_baseline_df[metric].corr(
+                combined_baseline_df[realism_column], method="kendall"
+            )
+            correlation_baseline_results.append(
+                {
+                    "Metric": metric,
+                    "Pearson Correlation": pearson_corr_base,
+                    "Kendall Correlation": kendall_corr_base,
+                }
+            )
+        except:
+            pass  # there are metric that need reference that baselien features do not have as they act as reference
 
     # Convert the results into a DataFrame
     correlation_df = pd.DataFrame(correlation_results)
+    correlation_baseline_df = pd.DataFrame(correlation_baseline_results)
 
     # Save the correlation results to a CSV file
     correlation_csv_path = os.path.join(
         output_dir, f"{model_to_seek}_ground_truth_correlations.csv"
     )
     correlation_df.to_csv(correlation_csv_path, index=False)
+
+    correlation_baseline_csv_path = os.path.join(
+        output_dir, f"baseline_ground_truth_correlations.csv"
+    )
+    correlation_baseline_df.to_csv(correlation_baseline_csv_path, index=False)
 
     plot_metric_comparison(
         single_metric_df, single_metric_baseline_df, output_dir, model_to_seek

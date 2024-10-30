@@ -152,15 +152,15 @@ MODEL_TO_TRANSFORM_MAP = {
     "rad_resnet50": lambda x: x,
     "densenet121": lambda x: x,
     "rad_densenet": lambda x: x,
-    "clip": lambda x: -x.transpose(0, 2, 1),
-    "rad_clip": lambda x: -x.transpose(0, 2, 1),
+    "clip": lambda x: x.transpose(0, 2, 1),
+    "rad_clip": lambda x: x.transpose(0, 2, 1),
     "mae": lambda x: x.transpose(0, 2, 1),
     "swav": lambda x: x,
-    "dino": lambda x: -x.transpose(0, 2, 1),
-    "rad_dino": lambda x: -x.transpose(0, 2, 1),
-    "convnext": lambda x: -x,
+    "dino": lambda x: x.transpose(0, 2, 1),
+    "rad_dino": lambda x: x.transpose(0, 2, 1),
+    "convnext": lambda x: x,
     "data2vec": lambda x: x.transpose(0, 2, 1),
-    "simclr": lambda x: -x,
+    "simclr": lambda x: x,
 }
 
 

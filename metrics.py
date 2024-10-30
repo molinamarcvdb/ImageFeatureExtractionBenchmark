@@ -538,57 +538,113 @@ def compute_inception_score(activations: np.ndarray, split_size: int = 5000) -> 
     return float(is_score)
 
 
+def apply_metric(metric, ref_features, sample_features):
+
+    real_stats = metric.compute_statistics(ref_features)
+    gen_stats = metric.compute_statistics(sample_features)
+
+    result = metric.compute_loss(real_stats, gen_stats)
+
+    return result
+
+
 def calculate_metrics(
     ref_features: np.ndarray,
     sample_features: np.ndarray,
     set_size: int,
     device: str = "cuda",
 ) -> Dict[str, float]:
+
+    from saliency.metrics_grad import (
+        FIDMetric,
+        PrecisionMetric,
+        RecallMetric,
+        DensityMetric,
+        CoverageMetric,
+        MMDMetric,
+        ISMetric,
+        KIDMetric,
+        # VendiMetric,
+        # AuthPctMetric,
+        SWMetric,
+        RealismMetric,
+    )
+    from metrics_sp.fid_inf import FIDInfinityMetric
+    from metrics_sp.vendi import VendiMetric
+    from metrics_sp.authpct import AuthPctMetric
+
     metrics = {}
 
     # Convert numpy arrays to PyTorch tensors
     ref_features_torch = torch.from_numpy(ref_features).float().to(device)
     sample_features_torch = torch.from_numpy(sample_features).float().to(device)
 
+    def apply_metric(metric, ref_features, sample_features):
+        real_stats = metric.compute_statistics(ref_features)
+        gen_stats = metric.compute_statistics(sample_features)
+        return metric.compute_loss(real_stats, gen_stats)
+
     with torch.no_grad():
-        # Compute FID
-        metrics["fid"] = calculate_fid(ref_features_torch, sample_features_torch).item()
-        metrics["fid_inf"] = compute_FD_infinity(
-            ref_features_torch, sample_features_torch
-        ).item()
-
-        # Compute PRDC metrics
-        prdc_results = compute_prdc(
-            ref_features_torch, sample_features_torch, nearest_k=5, realism=True
+        # FID metrics
+        metrics["fid"] = apply_metric(
+            FIDMetric(device), ref_features_torch, sample_features_torch
         )
-        metrics.update({k: v.item() for k, v in prdc_results.items()})
 
-        # Choose the kernel for MMD
-        mmd_kernel = "rbf"  # or 'multiscale'
-        metrics["mmd"] = MMD(
-            ref_features_torch, sample_features_torch, kernel=mmd_kernel
-        ).item()
+        metrics["fid_inf"] = apply_metric(
+            FIDInfinityMetric(device, min_batch=ref_features_torch.shape[0]),
+            ref_features_torch,
+            sample_features_torch,
+        )
 
-        # IS
-        metrics["is"] = compute_inception_score(sample_features_torch, set_size).item()
+        # PRDC metrics
+        for metric_class in [
+            PrecisionMetric,
+            RecallMetric,
+            DensityMetric,
+            CoverageMetric,
+        ]:
+            metric_name = metric_class.__name__.lower().replace("metric", "")
+            metric_instance = metric_class(
+                device, nearest_k=5
+            )  # k=5 for standard PRDC computation
+            metrics[metric_name] = apply_metric(
+                metric_instance, ref_features_torch, sample_features_torch
+            )
 
-        # KID
-        kid_mean, kid_std = KID(ref_features_torch, sample_features_torch, set_size)
-        metrics["kid_mean"] = kid_mean.item()
-        # metrics["kid_std"] = kid_std.item()
+        # MMD metric
+        metrics["mmd"] = apply_metric(
+            MMDMetric(device, kernel="rbf"), ref_features_torch, sample_features_torch
+        )
 
-        # Vendi
-        metrics["vendi"] = compute_vendi_score(sample_features_torch).item()
+        # Inception Score
+        metrics["is"] = apply_metric(
+            ISMetric(device), ref_features_torch, sample_features_torch
+        )
 
-        # AuthPct
-        metrics["authpct"] = compute_authpct(
-            ref_features_torch, sample_features_torch
-        ).item()
+        # KID metric
+        kid_metric = KIDMetric(device)
+        metrics["kid_mean"] = apply_metric(
+            kid_metric, ref_features_torch, sample_features_torch
+        )
 
-        # SW
-        metrics["sw"] = sw_approx(ref_features_torch, sample_features_torch).item()
+        # Vendi Score
+        metrics["vendi"] = apply_metric(
+            VendiMetric(device), ref_features_torch, sample_features_torch
+        )
 
-    print(metrics)
+        # Authentication Percentage
+        metrics["authpct"] = apply_metric(
+            AuthPctMetric(device), ref_features_torch, sample_features_torch
+        )
+
+        # Sliced Wasserstein
+        metrics["sw"] = apply_metric(
+            SWMetric(device), ref_features_torch, sample_features_torch
+        )
+
+    # Convert all metrics to Python floats
+    metrics = {k: float(v) if torch.is_tensor(v) else v for k, v in metrics.items()}
+
     return metrics
 
 

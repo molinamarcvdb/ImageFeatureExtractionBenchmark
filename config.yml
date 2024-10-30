@@ -1,6 +1,6 @@
 # Configuration file for feature extraction and metric computation
 feature_extraction: false
-eval_only: false
+eval_only: true
 sing_image_eval: false
 realism_correlation: false
 saliency_representation: true
@@ -22,14 +22,14 @@ seed: 42
 model_to_seek: 'diff'
 # List of networks to use for feature extraction
 networks:
-  - 'rad_inception'
-  - 'inception'
+  #- 'rad_inception'
+  #- 'inception'
   - 'resnet50'
-  - 'rad_resnet50'
+  #- 'rad_resnet50'
   #- 'inceptionresnet'
   #- 'rad_inceptionresnet'
   - 'densenet121'
-  - 'rad_densenet'
+  #- 'rad_densenet'
   - 'clip'
   - 'rad_clip'
   - 'rad_dino'
