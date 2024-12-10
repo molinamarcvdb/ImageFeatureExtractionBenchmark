@@ -20,7 +20,7 @@ def load_and_process_data(case_dir):
             model_name = splits[1] if pretrain == "RadImageNet" else splits[0]
 
             # Extract loss function from filename
-            if "infonce" in file:
+            if "ntxent" in file:
                 loss_function = "InfoNCE"
             elif "triplet" in file:
                 loss_function = "Triplet"
@@ -113,7 +113,7 @@ def plot_aggregated_detection_ratios(df):
     plt.title("Comparison of backbone, pretraining and contrastive loss", fontsize=20)
     plt.xticks(x, models, rotation=0, ha="right", fontsize=15)
     plt.yticks(fontsize=15)
-    plt.legend(fontsize=15, loc="upper right")
+    plt.legend(fontsize=15, loc="upper center")
 
     plt.tight_layout()
     plt.savefig(

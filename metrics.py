@@ -551,7 +551,6 @@ def apply_metric(metric, ref_features, sample_features):
 def calculate_metrics(
     ref_features: np.ndarray,
     sample_features: np.ndarray,
-    set_size: int,
     device: str = "cuda",
 ) -> Dict[str, float]:
 
@@ -644,7 +643,7 @@ def calculate_metrics(
 
     # Convert all metrics to Python floats
     metrics = {k: float(v) if torch.is_tensor(v) else v for k, v in metrics.items()}
-
+    print(metrics)
     return metrics
 
 

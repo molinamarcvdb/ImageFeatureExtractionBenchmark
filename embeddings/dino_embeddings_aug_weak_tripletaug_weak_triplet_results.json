@@ -1,16 +1,100 @@
 {
   "braycurtis": {
-    "wasserstein_1d_train_val_train_synth": 0.02128363076927508,
-    "wasserstein_1d_train_val_train_train_adv": 0.011840136749405508,
-    "wasserstein_1d_train_val_train_val_adv": 0.009095044922931143,
-    "detection_ratio_train": 0.23636363636363636,
-    "detection_ratio_val": 0.21594349142280525
+    "wasserstein_1d_train_val_train_synth": 0.025561088799883294,
+    "wasserstein_1d_train_val_train_train_adv": 0.2855687486728997,
+    "wasserstein_1d_train_val_train_val_adv": 0.28465702907758805,
+    "detection_ratio_train": 0.9998687319506432,
+    "detection_ratio_val": 1.0
+  },
+  "canberra": {
+    "wasserstein_1d_train_val_train_synth": 2.4001041701312076,
+    "wasserstein_1d_train_val_train_train_adv": 38.27227583331334,
+    "wasserstein_1d_train_val_train_val_adv": 38.20235000532653,
+    "detection_ratio_train": 0.9994749278025729,
+    "detection_ratio_val": 0.9989501312335958
+  },
+  "chebyshev": {
+    "wasserstein_1d_train_val_train_synth": 0.4154388845668442,
+    "wasserstein_1d_train_val_train_train_adv": 7.8133284780789785,
+    "wasserstein_1d_train_val_train_val_adv": 7.817306683191143,
+    "detection_ratio_train": 0.9994749278025729,
+    "detection_ratio_val": 1.0
+  },
+  "cityblock": {
+    "wasserstein_1d_train_val_train_synth": 10.424560611850286,
+    "wasserstein_1d_train_val_train_train_adv": 269.22837492671556,
+    "wasserstein_1d_train_val_train_val_adv": 269.00451925740805,
+    "detection_ratio_train": 0.9998687319506432,
+    "detection_ratio_val": 1.0
+  },
+  "correlation": {
+    "wasserstein_1d_train_val_train_synth": 0.04747615230287451,
+    "wasserstein_1d_train_val_train_train_adv": 0.043800937440250376,
+    "wasserstein_1d_train_val_train_val_adv": 0.0016467386138442055,
+    "detection_ratio_train": 0.16789183512733,
+    "detection_ratio_val": 0.04409448818897638
+  },
+  "cosine": {
+    "wasserstein_1d_train_val_train_synth": 0.047494443973471155,
+    "wasserstein_1d_train_val_train_train_adv": 0.043846041897842164,
+    "wasserstein_1d_train_val_train_val_adv": 0.0015419630021551633,
+    "detection_ratio_train": 0.1677605670779732,
+    "detection_ratio_val": 0.046719160104986876
+  },
+  "dice": {
+    "wasserstein_1d_train_val_train_synth": 420154.7112315784,
+    "wasserstein_1d_train_val_train_train_adv": 314712.5033990663,
+    "wasserstein_1d_train_val_train_val_adv": 51712.377965791886,
+    "detection_ratio_train": 0.18889472302441584,
+    "detection_ratio_val": 0.051443569553805774
   },
   "euclidean": {
-    "wasserstein_1d_train_val_train_synth": 5.435452146268397,
-    "wasserstein_1d_train_val_train_train_adv": 2.4394902858779477,
-    "wasserstein_1d_train_val_train_val_adv": 1.8816355638733255,
-    "detection_ratio_train": 0.23383838383838385,
-    "detection_ratio_val": 0.20988900100908173
+    "wasserstein_1d_train_val_train_synth": 1.1370070379051826,
+    "wasserstein_1d_train_val_train_train_adv": 31.13628454245447,
+    "wasserstein_1d_train_val_train_val_adv": 31.109320890101365,
+    "detection_ratio_train": 1.0,
+    "detection_ratio_val": 1.0
+  },
+  "jensenshannon": {
+    "wasserstein_1d_train_val_train_synth": 0.013028945170501268,
+    "wasserstein_1d_train_val_train_train_adv": 0.18137669015946353,
+    "wasserstein_1d_train_val_train_val_adv": 0.180751694534299,
+    "detection_ratio_train": 0.9997374639012864,
+    "detection_ratio_val": 1.0
+  },
+  "mahalanobis": {
+    "wasserstein_1d_train_val_train_synth": 0.9091732724732118,
+    "wasserstein_1d_train_val_train_train_adv": 7.695645489681666,
+    "wasserstein_1d_train_val_train_val_adv": 7.572549821115081,
+    "detection_ratio_train": 0.9998687319506432,
+    "detection_ratio_val": 0.9994750656167979
+  },
+  "matching": {
+    "wasserstein_1d_train_val_train_synth": 6.038717093748416e-05,
+    "wasserstein_1d_train_val_train_train_adv": 0.013211924061433448,
+    "wasserstein_1d_train_val_train_val_adv": 0.011104608899594758,
+    "detection_ratio_train": 0.027172486216854818,
+    "detection_ratio_val": 0.01732283464566929
+  },
+  "minkowski": {
+    "wasserstein_1d_train_val_train_synth": 1.1370070379051826,
+    "wasserstein_1d_train_val_train_train_adv": 31.13628454245447,
+    "wasserstein_1d_train_val_train_val_adv": 31.109320890101365,
+    "detection_ratio_train": 1.0,
+    "detection_ratio_val": 1.0
+  },
+  "seuclidean": {
+    "wasserstein_1d_train_val_train_synth": 0.24548633093041802,
+    "wasserstein_1d_train_val_train_train_adv": 5.879510987884952,
+    "wasserstein_1d_train_val_train_val_adv": 5.863797000540033,
+    "detection_ratio_train": 1.0,
+    "detection_ratio_val": 1.0
+  },
+  "sqeuclidean": {
+    "wasserstein_1d_train_val_train_synth": 88.06057033297202,
+    "wasserstein_1d_train_val_train_train_adv": 1464.0659442425867,
+    "wasserstein_1d_train_val_train_val_adv": 1463.1678243988626,
+    "detection_ratio_train": 1.0,
+    "detection_ratio_val": 1.0
   }
 }

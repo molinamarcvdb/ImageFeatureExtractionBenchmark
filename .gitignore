@@ -28,3 +28,4 @@ ijepa/logs/*
 *.json
 *.pt
 *.npz
+*.pkl

@@ -168,7 +168,6 @@ def main():
     metrics = config["metrics"]
     do_z_score = config["do_z_score"]
     model_to_seek = config["model_to_seek"]
-    synthetic_dataset_path = os.path.join(synthetic_dataset_path, model_to_seek)
 
     network_list = [
         "inception",
@@ -332,6 +331,7 @@ def main():
         )
         # Compute correlation analyses for real data for baseline comaprison
         real_net_sets_dict = get_sets_content(timestamp, "_", "real")
+        print(real_net_sets_dict)
 
         real_dict_sets_realism, real_dict_sets_her = get_realism_set_dict(
             grouped_data,
@@ -376,6 +376,8 @@ def main():
         network_names = [i for i in config["networks"] if i in network_list]
 
         for network_name in network_names:
+            print(network_name)
+            print("-------------------")
             try:
                 (
                     model,
@@ -401,7 +403,9 @@ def main():
                 if os.path.exists(embeddings_file):
                     print(f"Processing {network_name}")
                     stats = compute_distances_and_plot(
-                        embeddings_file, output_dir, config, ["braycurtis", "euclidean"]
+                        embeddings_file,
+                        output_dir,
+                        config,
                     )
                     find_and_plot_similar_images(
                         embeddings_file,

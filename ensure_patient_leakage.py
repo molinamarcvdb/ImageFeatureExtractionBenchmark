@@ -1,123 +1,157 @@
 import os
 import sys
 import logging
-import pandas as pd
-import polars as pl
 import random
-from collections import defaultdict
-from typing import List
+from pathlib import Path
+from typing import List, Tuple, Optional
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()
 
 
 def create_train_val_split(
-    patient_data_dir,
-    patient_info_path,
-    patient_id: str,
-    secondary_ids: List,
-    unique_identifier_col: str,
-    train_ratio=0.8,
+    patient_data_dir: str,
+    patient_info_path: Optional[str] = None,
+    patient_id: Optional[str] = None,
+    secondary_ids: Optional[List[str]] = None,
+    unique_identifier_col: Optional[str] = None,
+    train_ratio: float = 0.8,
     extension: str = ".jpeg",
-    seed: int = None,
-):
-
+    seed: Optional[int] = None,
+) -> Tuple[List[str], List[str]]:
+    """
+    Create train-validation split of image paths. If patient_info_path is provided,
+    splits will maintain patient separation. Otherwise, performs simple random split.
+    """
     # Set the seed for reproducibility
     if seed is not None:
         random.seed(seed)
 
     # Get all image paths
     image_paths = []
-    for root, dirs, filenames in sorted(os.walk(patient_data_dir)):
-        for file in sorted(filenames):
-            if file.endswith((extension)):
-                image_paths.append(os.path.join(patient_data_dir, file))
+    patient_data_path = Path(patient_data_dir)
+    for file_path in patient_data_path.rglob(f"*{extension}"):
+        image_paths.append(str(file_path))
 
-    # Read patient info
-    df = pd.read_csv(patient_info_path)
-    dfl = pl.from_pandas(df)
+    if not image_paths:
+        logger.warning(
+            f"No images found with extension {extension} in {patient_data_dir}"
+        )
+        return [], []
 
-    # Group images by patient_id
-    extended_ids = [patient_id]
-    if secondary_ids:
-        extended_ids.extend(secondary_ids)
-    unique_images = (
-        dfl.sort(
-            unique_identifier_col
-        )  # Sort to ensure consistent selection of the "first" image
-        .group_by(extended_ids)
-        .agg(pl.col(unique_identifier_col).first().alias("unique_image"))
-    )
-    # Group the unique images by patient
-    patient_images = (
-        unique_images.group_by(patient_id)
-        .agg(pl.col("unique_image").alias("image_list"))
-        .sort(patient_id)
-    )
-    print(patient_images)
-    # Create dictionary of patient to image paths
-    patient_to_images = defaultdict(list)
-    for patient, images in sorted(
-        zip(patient_images[patient_id], patient_images["image_list"])
-    ):
-        for image in sorted(images):
-            full_path = os.path.join(
-                patient_data_dir, os.path.splitext(image)[0] + extension
+    # If no CSV file is provided or it doesn't exist, do simple random split
+    if patient_info_path is None or not os.path.isfile(patient_info_path):
+        logger.info(
+            "No valid patient info file provided. Performing simple random split."
+        )
+
+        # Shuffle all image paths
+        random.shuffle(image_paths)
+
+        # Calculate split index
+        split_idx = int(len(image_paths) * train_ratio)
+
+        train_paths = image_paths[:split_idx]
+        val_paths = image_paths[split_idx:]
+
+        logger.info(
+            f"Simple split resulted in {len(train_paths)} training images "
+            f"and {len(val_paths)} validation images"
+        )
+
+        return train_paths, val_paths
+
+    # If CSV exists, try to use it for patient-based splitting
+    try:
+        import pandas as pd
+        import polars as pl
+
+        df = pd.read_csv(patient_info_path)
+        dfl = pl.from_pandas(df)
+
+        # Check if required columns exist
+        required_cols = [
+            col for col in [patient_id, unique_identifier_col] if col is not None
+        ]
+        if not all(col in df.columns for col in required_cols):
+            logger.warning(
+                "Required columns not found in CSV. Falling back to simple random split."
             )
-            if full_path in image_paths:
-                print(full_path)
-                patient_to_images[patient].append(full_path)
+            random.shuffle(image_paths)
+            split_idx = int(len(image_paths) * train_ratio)
+            return image_paths[:split_idx], image_paths[split_idx:]
 
-    # Get the list of patients and shuffle it
-    patients = sorted(list(patient_to_images.keys()))
-    random.Random(seed).shuffle(patients)
+        # Original patient-based splitting logic
+        extended_ids = [patient_id]
+        if secondary_ids:
+            extended_ids.extend(secondary_ids)
 
-    imgs = []
+        unique_images = (
+            dfl.sort(unique_identifier_col)
+            .group_by(extended_ids)
+            .agg(pl.col(unique_identifier_col).first().alias("unique_image"))
+        )
 
-    for patient in patients:
-        imgs.extend(patient_to_images[patient])
+        patient_images = (
+            unique_images.group_by(patient_id)
+            .agg(pl.col("unique_image").alias("image_list"))
+            .sort(patient_id)
+        )
 
-    total_number_imgs = len(imgs)
+        # Create dictionary of patient to image paths
+        patient_to_images = {}
+        for patient, images in zip(
+            patient_images[patient_id], patient_images["image_list"]
+        ):
+            if patient is not None:
+                patient_paths = []
+                for image in images:
+                    if image is not None:
+                        full_path = os.path.join(
+                            patient_data_dir, os.path.splitext(image)[0] + extension
+                        )
+                        if os.path.exists(full_path):
+                            patient_paths.append(full_path)
+                if patient_paths:
+                    patient_to_images[patient] = patient_paths
 
-    train_paths: list[str] = []
-    val_paths: list[str] = []
+        if not patient_to_images:
+            logger.warning(
+                "No valid patient-image mappings found. Falling back to simple random split."
+            )
+            random.shuffle(image_paths)
+            split_idx = int(len(image_paths) * train_ratio)
+            return image_paths[:split_idx], image_paths[split_idx:]
 
-    img_count = 0
-    train_full = False
+        # Split patients
+        patients = sorted(list(patient_to_images.keys()))
+        random.shuffle(patients)
 
-    img_train_idx = int(total_number_imgs * train_ratio)
-    patient_count = 0
-    for patient in patients:
-        images = patient_to_images[patient]
-        img_count += len(images)
+        train_paths = []
+        val_paths = []
+        current_train_images = 0
+        total_images = sum(len(images) for images in patient_to_images.values())
+        target_train_images = int(total_images * train_ratio)
 
-        if not train_full:
-            patient_count += 1
-            train_paths.extend(images)
-        else:
-            val_paths.extend(images)
+        for patient in patients:
+            images = patient_to_images[patient]
+            if current_train_images < target_train_images:
+                train_paths.extend(images)
+                current_train_images += len(images)
+            else:
+                val_paths.extend(images)
 
-        if img_count >= img_train_idx:
-            train_full = True
+        logger.info(
+            f"Patient-based split resulted in {len(train_paths)} training images "
+            f"and {len(val_paths)} validation images"
+        )
 
-    logger.info(
-        f"Train val splitting resulting in {len(train_paths)} training images and {len(val_paths)} validation images"
-    )
-    logger.info(
-        f"Out of all {len(patients)} individuals, {patient_count} resulted in training set"
-    )
+        return train_paths, val_paths
 
-    return train_paths, val_paths
-
-
-## Usage
-# patient_data_dir = '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/datasets/512/output_images_512_all'
-# patient_info_path = '/mnt/DV-MICROK/Syn.Dat/Marc/GitLab/syntheva/Notebooks/dicom_metadata.csv'
-
-# # Use a fixed seed for reproducibility
-# seed = 42
-# train_paths, val_paths = create_train_val_split(patient_data_dir, patient_info_path, patient_id='Patient ID', unique_identifier_col='Filename', secondary_ids= ['Laterality', 'Projection'], train_ratio=0.8, seed=seed)
-
-# print(f"Number of training images: {len(train_paths)}")
-# print(f"Number of validation images: {len(val_paths)}")
-# print(f"Final split ratio {len(train_paths)/(len(train_paths)+len(val_paths))}")
+    except Exception as e:
+        logger.warning(
+            f"Error processing CSV file: {e}. Falling back to simple random split."
+        )
+        random.shuffle(image_paths)
+        split_idx = int(len(image_paths) * train_ratio)
+        return image_paths[:split_idx], image_paths[split_idx:]

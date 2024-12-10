@@ -120,7 +120,7 @@ class AuthPctMetric(BaseMetric):
         Returns positive score (not negated).
         """
         with torch.no_grad():
-            return -self.compute_loss(real_stats, gen_stats).item()
+            return self.compute_loss(real_stats, gen_stats).item()
 
 
 # Factory function

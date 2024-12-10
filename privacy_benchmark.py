@@ -1361,18 +1361,27 @@ def load_best_model_for_inference(
         raise FileNotFoundError(f"JSON file not found: {json_path}")
 
     train_paths, val_paths = load_image_paths(json_path)
-    file_paths = [
-        os.path.join(os.getcwd(), config["real_dataset_path"], file)
-        for file in os.listdir(config["real_dataset_path"])
-    ]
 
-    train_paths = file_paths[: int(0.8 * len(file_paths))]
-    val_paths = file_paths[int(0.8 * len(file_paths)) :]
-    synthetic_paths = [
-        os.path.join(os.getcwd(), config["synthetic_dataset_path"], file)
-        for file in os.listdir(config["synthetic_dataset_path"])
-        if file.endswith((".jpg", ".jpeg", ".png"))
-    ]
+    file_paths = []
+    for root, dirs, files in os.walk(
+        os.path.join(os.getcwd(), config["real_dataset_path"])
+    ):
+        for file in files:
+            if file.endswith((".jpg", ".jpeg", ".png")):
+                file_paths.append(os.path.join(root, file))
+
+    train_paths = file_paths[: int(config["split_ratio"] * len(file_paths))]
+    val_paths = file_paths[int(config["split_ratio"] * len(file_paths)) :]
+
+    synthetic_paths = []
+    for root, dirs, files in os.walk(
+        os.path.join(os.getcwd(), config["synthetic_dataset_path"])
+    ):
+        for file in files:
+
+            if file.endswith((".jpg", ".jpeg", ".png")):
+                synthetic_paths.append(os.path.join(root, file))
+
     train_standard_loader, val_loader, synth_loader = create_dataloaders(
         train_paths, val_paths, synthetic_paths, config
     )

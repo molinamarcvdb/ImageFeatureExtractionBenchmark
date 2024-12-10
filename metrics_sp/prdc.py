@@ -258,9 +258,9 @@ class PRDCLoss(torch.nn.Module):
             )
             loss = torch.mean(torch.max(ratios, dim=0)[0])
 
-        return -loss  # Return negative for minimization
+        return loss  # Return negative for minimization
 
     def get_metric_value(self, real_features, fake_features):
         """Get the raw metric value without gradients"""
         with torch.no_grad():
-            return -self.forward(real_features, fake_features)
+            return self.forward(real_features, fake_features)
